@@ -1,0 +1,12 @@
+pub mod cli;
+pub(crate) mod inventory;
+pub(crate) mod logging;
+pub(crate) mod playbook;
+pub(crate) mod registry;
+pub(crate) mod tasks;
+pub(crate) mod cert;
+pub(crate) mod connector;
+pub(crate) mod error;
+pub(crate) mod prep;
+pub(crate) mod template;
+pub(crate) mod utils;

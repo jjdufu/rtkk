@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Latest stable (2026-10-01). MSRV stays in Cargo.toml rust-version.
+  RUST_VERSION: "1.99.0"
+
+jobs:
+  test:
+    # Host is only the VM that pulls the image. The check itself runs in
+    # debian:13, the only OS this project has been tested on.
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Pull latest Debian 13
+        run: docker pull debian:13
+
+      - name: Clippy and test in Debian 13
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/src \
+            -w /src \
+            -e RUST_VERSION \
+            -e CARGO_TERM_COLOR \
+            debian:13 \
+            bash .github/scripts/release/debian13-build.sh ci

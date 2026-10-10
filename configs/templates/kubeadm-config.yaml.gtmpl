@@ -1,0 +1,34 @@
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: {{ .ip }}
+  bindPort: {{ index (splitList ":" .control_plane_endpoint) 1 }}
+nodeRegistration:
+  criSocket: unix:///var/run/containerd/containerd.sock
+  imagePullPolicy: IfNotPresent
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+kubernetesVersion: {{ .kube_version }}
+controlPlaneEndpoint: {{ .control_plane_endpoint }}
+imageRepository: {{ .registry.url }}
+etcd:
+  external:
+    endpoints:
+      {{- range .etcd_endpoints }}
+      - {{ . }}
+      {{- end }}
+    caFile: /etc/etcd/pki/ca.pem
+    certFile: /etc/apiserver/pki/etcd-client.pem
+    keyFile: /etc/apiserver/pki/etcd-client-key.pem
+networking:
+  dnsDomain: {{ .cluster_domain }}
+  podSubnet: {{ .pod_subnet }}
+  serviceSubnet: {{ .service_subnet }}
+apiServer:
+  extraEnvs:
+    - name: KUBE_WATCHCACHE_CONSISTENCY_CHECKER
+      value: "false"
+  extraArgs:
+    - name: authorization-mode
+      value: Node,RBAC

@@ -1,0 +1,37 @@
+images:
+  - name: kube-apiserver
+    source: "registry.k8s.io/kube-apiserver:{{ .kube_version }}"
+    target: "{{ .registry.url }}/kube-apiserver:{{ .kube_version }}"
+  - name: kube-controller-manager
+    source: "registry.k8s.io/kube-controller-manager:{{ .kube_version }}"
+    target: "{{ .registry.url }}/kube-controller-manager:{{ .kube_version }}"
+  - name: kube-scheduler
+    source: "registry.k8s.io/kube-scheduler:{{ .kube_version }}"
+    target: "{{ .registry.url }}/kube-scheduler:{{ .kube_version }}"
+  - name: kube-proxy
+    source: "registry.k8s.io/kube-proxy:{{ .kube_version }}"
+    target: "{{ .registry.url }}/kube-proxy:{{ .kube_version }}"
+  - name: kube-vip
+    source: "docker.io/plndr/kube-vip:{{ .kube_vip_version }}"
+    target: "{{ .registry.url }}/kube-vip:{{ .kube_vip_version }}"
+  - name: coredns
+    source: "registry.k8s.io/coredns/coredns:{{ .coredns_version }}"
+    target: "{{ .registry.url }}/coredns:{{ .coredns_version }}"
+  - name: pause
+    source: "registry.k8s.io/pause:{{ .pause_version }}"
+    target: "{{ .registry.url }}/pause:{{ .pause_version }}"
+  - name: k8s-dns-node-cache
+    source: "registry.k8s.io/dns/k8s-dns-node-cache:{{ .nodelocaldns_version }}"
+    target: "{{ .registry.url }}/k8s-dns-node-cache:{{ .nodelocaldns_version }}"
+  - name: cilium
+    source: "quay.io/cilium/cilium:{{ .cilium_version }}"
+    target: "{{ .registry.url }}/cilium:{{ .cilium_version }}"
+  - name: operator-generic
+    source: "quay.io/cilium/operator-generic:{{ .cilium_version }}"
+    target: "{{ .registry.url }}/operator-generic:{{ .cilium_version }}"
+  - name: cilium-envoy
+    source: "quay.io/cilium/cilium-envoy:{{ .cilium_envoy_version }}"
+    target: "{{ .registry.url }}/cilium-envoy:{{ .cilium_envoy_version }}"
+  - name: provisioner-localpv
+    source: "docker.io/openebs/provisioner-localpv:{{ .openebs_version }}"
+    target: "{{ .registry.url }}/provisioner-localpv:{{ .openebs_version }}"

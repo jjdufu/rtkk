@@ -1,0 +1,31 @@
+[Unit]
+Description=etcd key-value store
+Documentation=https://github.com/etcd-io/etcd
+After=network.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/etcd \
+  --name={{ .inventory_hostname }} \
+  --data-dir=/var/lib/etcd \
+  --listen-peer-urls=https://{{ .ip }}:2380 \
+  --listen-client-urls=https://{{ .ip }}:2379,https://127.0.0.1:2379 \
+  --initial-advertise-peer-urls=https://{{ .ip }}:2380 \
+  --advertise-client-urls=https://{{ .ip }}:2379 \
+  --initial-cluster={{ .etcd_initial_cluster }} \
+  --initial-cluster-token=etcd-k8s-token \
+  --initial-cluster-state=new \
+  --client-cert-auth=true \
+  --trusted-ca-file=/etc/etcd/pki/ca.pem \
+  --cert-file=/etc/etcd/pki/etcd.pem \
+  --key-file=/etc/etcd/pki/etcd-key.pem \
+  --peer-client-cert-auth=true \
+  --peer-trusted-ca-file=/etc/etcd/pki/ca.pem \
+  --peer-cert-file=/etc/etcd/pki/peer.pem \
+  --peer-key-file=/etc/etcd/pki/peer-key.pem
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,67 @@
+# =============================================================================
+# H8 / TODO(incomplete): 多架构二进制下载 — 未完成，请勿删除本注释块
+#
+# 现状：下列 URL 与 helm 解压路径写死 linux/amd64（x86_64）。
+# 镜像拉取架构见 inventory vars.image_sync.platform（已配置化）；
+# 本 playbook 的「组件二进制/归档」架构尚未与 platform 对齐，亦未引入
+# 独立的 download_arch / os_arch 等变量。
+#
+# 未完成项（后续多架构支持时处理，勿在「清理硬编码」中误删本标记）：
+#   - kubeadm/kubelet/kubectl 路径中的 linux/amd64
+#   - containerd / etcd / cni / helm 包名中的 linux-amd64
+#   - runc.amd64
+#   - helm 解压成员路径 linux-amd64/helm
+#   - 与 image_sync.platform 统一或拆分 download_os / download_arch
+# =============================================================================
+- name: Download Kubernetes Offline Artifacts
+  hosts: localhost
+  tasks:
+    - name: Create local download directories
+      command: "mkdir -p ./downloads/bin ./downloads/tar ./downloads/images ./logs"
+    # H8 TODO(incomplete multi-arch download): path segment linux/amd64
+    - name: Download kubeadm binary
+      http_get_file:
+        url: "https://dl.k8s.io/release/{{ .kube_version }}/bin/linux/amd64/kubeadm"
+        dest: "./downloads/bin/kubeadm"
+    # H8 TODO(incomplete multi-arch download): path segment linux/amd64
+    - name: Download kubelet binary
+      http_get_file:
+        url: "https://dl.k8s.io/release/{{ .kube_version }}/bin/linux/amd64/kubelet"
+        dest: "./downloads/bin/kubelet"
+    # H8 TODO(incomplete multi-arch download): path segment linux/amd64
+    - name: Download kubectl binary
+      http_get_file:
+        url: "https://dl.k8s.io/release/{{ .kube_version }}/bin/linux/amd64/kubectl"
+        dest: "./downloads/bin/kubectl"
+    # H8 TODO(incomplete multi-arch download): archive name linux-amd64
+    - name: Download containerd archive
+      http_get_file:
+        url: "https://github.com/containerd/containerd/releases/download/v{{ .containerd_version }}/containerd-{{ .containerd_version }}-linux-amd64.tar.gz"
+        dest: "./downloads/tar/containerd.tar.gz"
+    # H8 TODO(incomplete multi-arch download): asset name runc.amd64
+    - name: Download runc binary
+      http_get_file:
+        url: "https://github.com/opencontainers/runc/releases/download/{{ .runc_version }}/runc.amd64"
+        dest: "./downloads/bin/runc"
+    # H8 TODO(incomplete multi-arch download): archive name linux-amd64
+    - name: Download etcd archive
+      http_get_file:
+        url: "https://github.com/etcd-io/etcd/releases/download/{{ .etcd_version }}/etcd-{{ .etcd_version }}-linux-amd64.tar.gz"
+        dest: "./downloads/tar/etcd.tar.gz"
+    # H8 TODO(incomplete multi-arch download): archive name linux-amd64
+    - name: Download CNI plugins archive
+      http_get_file:
+        url: "https://github.com/containernetworking/plugins/releases/download/{{ .cni_version }}/cni-plugins-linux-amd64-{{ .cni_version }}.tgz"
+        dest: "./downloads/tar/cni-plugins.tgz"
+    # H8 TODO(incomplete multi-arch download): archive name linux-amd64
+    - name: Download Helm archive
+      http_get_file:
+        url: "https://get.helm.sh/helm-{{ .helm_version }}-linux-amd64.tar.gz"
+        dest: "./downloads/tar/helm.tar.gz"
+    # H8 TODO(incomplete multi-arch download): tar member path linux-amd64/helm
+    - name: Extract Helm binary
+      shell: "tar -zxvf ./downloads/tar/helm.tar.gz --strip-components=1 -C ./downloads/bin linux-amd64/helm"
+    - name: Pull public images to docker-legacy tarballs
+      command: "{{ .rtkk_bin }} pull-images -i {{ .rtkk_inventory }} --images-file {{ .images_file }} -l logs/pull-images.log"
+    - name: Push image tars to private registry (list batch)
+      command: "{{ .rtkk_bin }} push-images -i {{ .rtkk_inventory }} --images-file {{ .images_file }} -l logs/push-images.log"

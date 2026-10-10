@@ -1,0 +1,73 @@
+# 示例占位。口令和地址按环境修改，不要把真实口令或内网地址提交到仓库。
+vars:
+  ansible_user: "root"
+  ansible_ssh_pass: "change-me"
+  rtkk_bin: "./target/release/rtkk"
+  rtkk_inventory: "configs/inventory.yaml"
+  images_file: "configs/images.yaml"
+  registry:
+    url: "10.0.0.10/rtkk"
+    host: "10.0.0.10"
+    username: "admin"
+    password: "change-me"
+    auth_basic: "change-me"
+    # Private Harbor with self-signed or HTTP; required after TLS default=false
+    insecure: true
+    push_empty_policy: warn_ok
+  image_sync:
+    output_dir: "./downloads/images"
+    # OCI pull/push platform (configured). Binary download arch in configs/download.yaml
+    # is still hardcoded amd64 — see H8 TODO(incomplete multi-arch download) there; do not strip.
+    platform: "linux/amd64"
+    insecure: true
+    retries: 3
+    layer_concurrency: 4
+    http_timeout_secs: 600
+  pki_dir: "./pki"
+  kube_version: "v1.35.6"
+  etcd_version: "v3.6.12"
+  containerd_version: "1.7.32"
+  runc_version: "v1.1.15"
+  cni_version: "v1.6.0"
+  helm_version: "v3.15.3"
+  control_plane_endpoint: "10.0.0.68:6443"
+  # kube-vip ARP interface on control-plane nodes (must match primary NIC)
+  vip_interface: "ens33"
+  # Cluster networking (single source for kubeadm / Cilium / NodeLocalDNS)
+  pod_subnet: "10.233.0.0/18"
+  service_subnet: "10.233.64.0/18"
+  cluster_dns_ip: "10.233.64.10"
+  cluster_domain: "cluster.local"
+  cluster_pool_mask_size: "24"
+  nodelocaldns_ip: "169.254.20.10"
+  # containerd certs.d hosts for public image sources
+  public_registries:
+    - docker.io
+    - registry-1.docker.io
+    - registry.k8s.io
+    - quay.io
+    - gcr.io
+    - ghcr.io
+    - higress-registry.cn-hangzhou.cr.aliyuncs.com
+    - ecr-public.aws.com
+    - code.forgejo.org
+  coredns_version: "v1.13.1"
+  kube_vip_version: "v0.7.2"
+  pause_version: "3.10.1"
+  nodelocaldns_version: "1.26.4"
+  cilium_version: "v1.19.4"
+  cilium_envoy_version: "v1.36.6-1776000132-2437d2edeaf4d9b56ef279bd0d71127440c067aa"
+  openebs_version: "4.4.0"
+  dns_upstream: "10.0.0.111"
+hosts:
+  c23-p61: 10.0.0.61
+  c23-p62: 10.0.0.62
+  c23-p63: 10.0.0.63
+  c23-p64: 10.0.0.64
+  c23-p65: 10.0.0.65
+  c23-p66: 10.0.0.66
+roles:
+  kube_control_plane: [c23-p61, c23-p62, c23-p63]
+  kube_node: [c23-p64, c23-p65, c23-p66]
+  etcd: [c23-p61, c23-p62, c23-p63]
+  k8s_cluster: [kube_control_plane, kube_node]

@@ -1,0 +1,78 @@
+[workspace]
+resolver = "2"
+members = ["."]
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+[workspace.lints.rust]
+warnings = "deny"
+unsafe_code = "forbid"
+unused_imports = "deny"
+unused_variables = "deny"
+dead_code = "deny"
+unused_mut = "deny"
+unused_must_use = "deny"
+missing_docs = "allow"
+elided_lifetimes_in_paths = "deny"
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+allow_attributes = "deny"
+blanket_clippy_restriction_lints = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+todo = "deny"
+unimplemented = "deny"
+panic = "deny"
+unreachable = "deny"
+as_conversions = "deny"
+indexing_slicing = "deny"
+clone_on_copy = "deny"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+[package]
+name = "rtkk"
+version = "0.0.0" # x-release-please-version
+edition.workspace = true
+rust-version.workspace = true
+[lints]
+workspace = true
+[dependencies]
+tokio = { version = "1.43", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "process",
+    "fs",
+    "sync",
+    "time",
+    "io-util",
+    "signal",
+    "io-std",
+] }
+ssh2-tokio = { package = "async-ssh2-lite", version = "0.5.0", features = ["tokio"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+gtmpl = "0.7"
+gtmpl_value = "0.5"
+reqwest = { version = "0.12", features = ["json", "socks", "stream"] }
+bytes = "1.0"
+terminal_size = "0.4"
+futures-util = "0.3"
+get_if_addrs = "0.5"
+thiserror = "2.0"
+rcgen = { version = "0.14.7", features = ["pem", "x509-parser"] }
+x509-parser = "0.18"
+time = { version = "0.3", features = ["std"] }
+regex = "1.11"
+ipnet = "2.10"
+sha2 = "0.10"
+rand = "0.8"
+semver = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["registry", "fmt"] }
+tracing-appender = "0.2"
+tar = "0.4"
+serde_yml = "0.0.13"
+clap = { version = "4.6.1", features = ["derive"] }
+shell-words = "1.1"

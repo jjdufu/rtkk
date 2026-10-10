@@ -1,0 +1,148 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nodelocaldns
+  namespace: kube-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nodelocaldns
+  namespace: kube-system
+data:
+  Corefile: |
+    {{ .cluster_domain }}:53 {
+        errors
+        cache {
+                success 9984 30
+                denial 9984 5
+        }
+        reload
+        loop
+        bind {{ .nodelocaldns_ip }}
+        forward . {{ .cluster_dns_ip }} {
+                force_tcp
+        }
+        health {{ .nodelocaldns_ip }}:9254
+    }
+    in-addr.arpa:53 {
+        errors
+        cache 30
+        reload
+        loop
+        bind {{ .nodelocaldns_ip }}
+        forward . {{ .cluster_dns_ip }} {
+                force_tcp
+        }
+    }
+    ip6.arpa:53 {
+        errors
+        cache 30
+        reload
+        loop
+        bind {{ .nodelocaldns_ip }}
+        forward . {{ .cluster_dns_ip }} {
+                force_tcp
+        }
+    }
+    .:53 {
+        errors
+        cache 30
+        reload
+        loop
+        bind {{ .nodelocaldns_ip }}
+        forward . /etc/resolv.conf
+    }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nodelocaldns
+  namespace: kube-system
+  labels:
+    k8s-app: kube-dns
+spec:
+  selector:
+    matchLabels:
+      k8s-app: nodelocaldns
+  template:
+    metadata:
+      labels:
+        k8s-app: nodelocaldns
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+      priorityClassName: system-cluster-critical
+      serviceAccountName: nodelocaldns
+      hostNetwork: true
+      dnsPolicy: Default  # Don't use cluster DNS.
+      tolerations:
+        - effect: NoSchedule
+          operator: "Exists"
+        - effect: NoExecute
+          operator: "Exists"
+        - key: "CriticalAddonsOnly"
+          operator: "Exists"
+      containers:
+      - name: node-cache
+        image: {{ .registry.url }}/k8s-dns-node-cache:{{ .nodelocaldns_version }}
+        resources:
+          limits:
+            memory: 200Mi
+          requests:
+            cpu: 100m
+            memory: 70Mi
+        args:
+          - -localip
+          - {{ .nodelocaldns_ip }}
+          - -conf
+          - /etc/coredns/Corefile
+          - -upstreamsvc
+          - kube-dns
+          - -metrics-listen-address
+          - 127.0.0.1:9353
+        securityContext:
+          privileged: true
+        ports:
+          - containerPort: 53
+            name: dns
+            protocol: UDP
+          - containerPort: 53
+            name: dns-tcp
+            protocol: TCP
+        livenessProbe:
+          httpGet:
+            host: {{ .nodelocaldns_ip }}
+            path: /health
+            port: 9254
+            scheme: HTTP
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 10
+        readinessProbe:
+          httpGet:
+            host: {{ .nodelocaldns_ip }}
+            path: /health
+            port: 9254
+            scheme: HTTP
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 10
+        volumeMounts:
+          - name: config-volume
+            mountPath: /etc/coredns
+          - name: xtables-lock
+            mountPath: /run/xtables.lock
+      volumes:
+        - name: config-volume
+          configMap:
+            name: nodelocaldns
+        - name: xtables-lock
+          hostPath:
+            path: /run/xtables.lock
+            type: FileOrCreate
+      terminationGracePeriodSeconds: 0
+  updateStrategy:
+    rollingUpdate:
+      maxUnavailable: 20%
+    type: RollingUpdate
