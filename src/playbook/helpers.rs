@@ -220,6 +220,14 @@ pub fn eval_condition(cond_val: &Value, host_vars: &Value) -> Result<bool, Strin
             Ok(true)
         }
         Value::String(s) => {
+            let raw_trimmed = s.trim();
+            if !raw_trimmed.contains("{{") {
+                match raw_trimmed.to_ascii_lowercase().as_str() {
+                    "true" | "1" | "yes" | "on" => return Ok(true),
+                    "false" | "0" | "no" | "off" | "" => return Ok(false),
+                    _ => {}
+                }
+            }
             let wrapped = crate::utils::wrap_condition_string(s);
             let rendered = crate::template::render_template_string(
                 &wrapped,
@@ -444,15 +452,15 @@ mod tests {
             },
         ];
         let reg = build_loop_register_value(&outcomes, None);
-        if reg.get("stdout").and_then(|v| v.as_str()) != Some("out2") {
+        if reg.get("stdout").and_then(serde_json::Value::as_str) != Some("out2") {
             return Err(format!("expected last stdout 'out2', got {reg}"));
         }
-        if reg.get("changed").and_then(|v| v.as_bool()) != Some(true) {
+        if reg.get("changed").and_then(serde_json::Value::as_bool) != Some(true) {
             return Err(format!("expected any_changed=true, got {reg}"));
         }
         let len = reg
             .get("results")
-            .and_then(|v| v.as_array())
+            .and_then(serde_json::Value::as_array)
             .map_or(0, Vec::len);
         if len != 2 {
             return Err(format!("expected 2 loop results, got {len}"));

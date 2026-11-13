@@ -80,3 +80,35 @@ tar = "0.4"
 serde_yml = "0.0.13"
 clap = { version = "4.6.1", features = ["derive"] }
 shell-words = "1.1"
+
+[[test]]
+name = "cert_tests"
+path = "test/cert_tests.rs"
+
+[[test]]
+name = "inventory_tests"
+path = "test/inventory_tests.rs"
+
+[[test]]
+name = "template_tests"
+path = "test/template_tests.rs"
+
+[[test]]
+name = "playbook_engine_tests"
+path = "test/playbook_engine_tests.rs"
+
+[[test]]
+name = "tasks_tests"
+path = "test/tasks_tests.rs"
+
+[[test]]
+name = "registry_tests"
+path = "test/registry_tests.rs"
+
+[[test]]
+name = "prep_and_cli_tests"
+path = "test/prep_and_cli_tests.rs"
+
+[[test]]
+name = "configs_render_tests"
+path = "test/configs_render_tests.rs"

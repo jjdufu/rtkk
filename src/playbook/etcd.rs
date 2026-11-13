@@ -74,7 +74,7 @@ fn inject_etcd_vars<S1, S2, S3>(
     S2: BuildHasher,
     S3: BuildHasher,
 {
-    let etcd_hosts: Vec<String> = resolved_groups
+    let mut etcd_hosts: Vec<String> = resolved_groups
         .get("etcd")
         .filter(|v| !v.is_empty())
         .or_else(|| {
@@ -87,6 +87,8 @@ fn inject_etcd_vars<S1, S2, S3>(
     if etcd_hosts.is_empty() {
         return;
     }
+    etcd_hosts.sort();
+    etcd_hosts.dedup();
     let mut initial_cluster_parts = Vec::with_capacity(etcd_hosts.len());
     let mut endpoint_parts = Vec::with_capacity(etcd_hosts.len());
     let mut endpoints_array = Vec::with_capacity(etcd_hosts.len());
