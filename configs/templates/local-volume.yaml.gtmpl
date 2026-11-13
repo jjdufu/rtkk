@@ -82,7 +82,7 @@ metadata:
   labels:
     name: openebs-localpv-provisioner
     openebs.io/component-name: openebs-localpv-provisioner
-    openebs.io/version: {{ .openebs_version }}
+    openebs.io/version: "{{ .openebs_version }}"
 spec:
   selector:
     matchLabels:
@@ -96,13 +96,13 @@ spec:
       labels:
         name: openebs-localpv-provisioner
         openebs.io/component-name: openebs-localpv-provisioner
-        openebs.io/version: {{ .openebs_version }}
+        openebs.io/version: "{{ .openebs_version }}"
     spec:
       serviceAccountName: openebs-maya-operator
       containers:
         - name: openebs-provisioner-hostpath
           imagePullPolicy: IfNotPresent
-          image: {{ .registry.url }}/provisioner-localpv:{{ .openebs_version }}
+          image: "{{ .registry.url }}/provisioner-localpv:{{ .openebs_version }}"
           env:
             - name: NODE_NAME
               valueFrom:
@@ -117,7 +117,7 @@ spec:
                 fieldRef:
                   fieldPath: spec.serviceAccountName
             - name: OPENEBS_IO_ENABLE_ANALYTICS
-              value: "true"
+              value: "false"
             - name: OPENEBS_IO_INSTALLER_TYPE
               value: "openebs-operator-lite"
             - name: OPENEBS_IO_HELPER_IMAGE

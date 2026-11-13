@@ -5,6 +5,28 @@ metadata:
   namespace: kube-system
 ---
 apiVersion: v1
+kind: Service
+metadata:
+  name: kube-dns-upstream
+  namespace: kube-system
+  labels:
+    k8s-app: kube-dns
+    kubernetes.io/cluster-service: "true"
+    kubernetes.io/name: "KubeDNSUpstream"
+spec:
+  ports:
+    - name: dns
+      port: 53
+      protocol: UDP
+      targetPort: 53
+    - name: dns-tcp
+      port: 53
+      protocol: TCP
+      targetPort: 53
+  selector:
+    k8s-app: kube-dns
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: nodelocaldns
@@ -19,8 +41,8 @@ data:
         }
         reload
         loop
-        bind {{ .nodelocaldns_ip }}
-        forward . {{ .cluster_dns_ip }} {
+        bind __PILLAR__LOCAL__DNS__
+        forward . __PILLAR__CLUSTER__DNS__ {
                 force_tcp
         }
         health {{ .nodelocaldns_ip }}:9254
@@ -30,8 +52,8 @@ data:
         cache 30
         reload
         loop
-        bind {{ .nodelocaldns_ip }}
-        forward . {{ .cluster_dns_ip }} {
+        bind __PILLAR__LOCAL__DNS__
+        forward . __PILLAR__CLUSTER__DNS__ {
                 force_tcp
         }
     }
@@ -40,8 +62,8 @@ data:
         cache 30
         reload
         loop
-        bind {{ .nodelocaldns_ip }}
-        forward . {{ .cluster_dns_ip }} {
+        bind __PILLAR__LOCAL__DNS__
+        forward . __PILLAR__CLUSTER__DNS__ {
                 force_tcp
         }
     }
@@ -50,8 +72,8 @@ data:
         cache 30
         reload
         loop
-        bind {{ .nodelocaldns_ip }}
-        forward . /etc/resolv.conf
+        bind __PILLAR__LOCAL__DNS__
+        forward . __PILLAR__UPSTREAM__SERVERS__
     }
 ---
 apiVersion: apps/v1
@@ -60,7 +82,7 @@ metadata:
   name: nodelocaldns
   namespace: kube-system
   labels:
-    k8s-app: kube-dns
+    k8s-app: nodelocaldns
 spec:
   selector:
     matchLabels:
@@ -75,7 +97,7 @@ spec:
       priorityClassName: system-cluster-critical
       serviceAccountName: nodelocaldns
       hostNetwork: true
-      dnsPolicy: Default  # Don't use cluster DNS.
+      dnsPolicy: Default
       tolerations:
         - effect: NoSchedule
           operator: "Exists"
@@ -84,59 +106,70 @@ spec:
         - key: "CriticalAddonsOnly"
           operator: "Exists"
       containers:
-      - name: node-cache
-        image: {{ .registry.url }}/k8s-dns-node-cache:{{ .nodelocaldns_version }}
-        resources:
-          limits:
-            memory: 200Mi
-          requests:
-            cpu: 100m
-            memory: 70Mi
-        args:
-          - -localip
-          - {{ .nodelocaldns_ip }}
-          - -conf
-          - /etc/coredns/Corefile
-          - -upstreamsvc
-          - kube-dns
-          - -metrics-listen-address
-          - 127.0.0.1:9353
-        securityContext:
-          privileged: true
-        ports:
-          - containerPort: 53
-            name: dns
-            protocol: UDP
-          - containerPort: 53
-            name: dns-tcp
-            protocol: TCP
-        livenessProbe:
-          httpGet:
-            host: {{ .nodelocaldns_ip }}
-            path: /health
-            port: 9254
-            scheme: HTTP
-          timeoutSeconds: 5
-          successThreshold: 1
-          failureThreshold: 10
-        readinessProbe:
-          httpGet:
-            host: {{ .nodelocaldns_ip }}
-            path: /health
-            port: 9254
-            scheme: HTTP
-          timeoutSeconds: 5
-          successThreshold: 1
-          failureThreshold: 10
-        volumeMounts:
-          - name: config-volume
-            mountPath: /etc/coredns
-          - name: xtables-lock
-            mountPath: /run/xtables.lock
+        - name: node-cache
+          image: "{{ .registry.url }}/k8s-dns-node-cache:{{ .nodelocaldns_version }}"
+          imagePullPolicy: IfNotPresent
+          resources:
+            limits:
+              memory: 200Mi
+            requests:
+              cpu: 100m
+              memory: 70Mi
+          args:
+            - -localip
+            - "{{ .nodelocaldns_ip }},{{ .cluster_dns_ip }}"
+            - -conf
+            - /etc/Corefile
+            - -upstreamsvc
+            - kube-dns-upstream
+            - -metrics-listen-address
+            - 127.0.0.1:9353
+          securityContext:
+            privileged: true
+          ports:
+            - containerPort: 53
+              name: dns
+              protocol: UDP
+            - containerPort: 53
+              name: dns-tcp
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              host: "{{ .nodelocaldns_ip }}"
+              path: /health
+              port: 9254
+              scheme: HTTP
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 10
+          readinessProbe:
+            httpGet:
+              host: "{{ .nodelocaldns_ip }}"
+              path: /health
+              port: 9254
+              scheme: HTTP
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 10
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/coredns
+            - name: kube-dns-config
+              mountPath: /etc/kube-dns
+            - name: xtables-lock
+              mountPath: /run/xtables.lock
+              readOnly: false
       volumes:
         - name: config-volume
           configMap:
             name: nodelocaldns
+            items:
+              - key: Corefile
+                path: Corefile.base
+        - name: kube-dns-config
+          configMap:
+            name: kube-dns
+            optional: true
         - name: xtables-lock
           hostPath:
             path: /run/xtables.lock

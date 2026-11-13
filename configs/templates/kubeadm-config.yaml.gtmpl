@@ -12,15 +12,17 @@ kind: ClusterConfiguration
 kubernetesVersion: {{ .kube_version }}
 controlPlaneEndpoint: {{ .control_plane_endpoint }}
 imageRepository: {{ .registry.url }}
+certificateValidityPeriod: {{ default "867240h" .cert_validity }}
+caCertificateValidityPeriod: {{ default "867240h" .cert_validity }}
 etcd:
   external:
     endpoints:
       {{- range .etcd_endpoints }}
       - {{ . }}
       {{- end }}
-    caFile: /etc/etcd/pki/ca.pem
-    certFile: /etc/apiserver/pki/etcd-client.pem
-    keyFile: /etc/apiserver/pki/etcd-client-key.pem
+    caFile: /etc/ssl/etcd/ssl/ca.pem
+    certFile: /etc/ssl/etcd/ssl/apiserver-etcd-client.pem
+    keyFile: /etc/ssl/etcd/ssl/apiserver-etcd-client-key.pem
 networking:
   dnsDomain: {{ .cluster_domain }}
   podSubnet: {{ .pod_subnet }}
@@ -32,3 +34,11 @@ apiServer:
   extraArgs:
     - name: authorization-mode
       value: Node,RBAC
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd
+clusterDNS:
+  - {{ .cluster_dns_ip }}
+clusterDomain: {{ .cluster_domain }}
+resolvConf: "{{ if .kubelet_resolv_conf }}{{ .kubelet_resolv_conf }}{{ else if .detected_resolv_conf }}{{ default "/etc/resolv.conf" .detected_resolv_conf.stdout }}{{ else }}{{ default "/etc/resolv.conf" .kubelet_resolv_conf }}{{ end }}"

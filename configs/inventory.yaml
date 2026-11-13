@@ -2,6 +2,9 @@
 vars:
   ansible_user: "root"
   ansible_ssh_pass: "change-me"
+  # ansible_become: false
+  # ansible_become_user: "root"
+  # ansible_ssh_host_key_checking: false
   rtkk_bin: "./target/release/rtkk"
   rtkk_inventory: "configs/inventory.yaml"
   images_file: "configs/images.yaml"
@@ -10,20 +13,24 @@ vars:
     host: "10.0.0.10"
     username: "admin"
     password: "change-me"
-    auth_basic: "change-me"
-    # Private Harbor with self-signed or HTTP; required after TLS default=false
+    # Auto-derived from username:password by rtkk when omitted or rotated
+    auth_basic: "YWRtaW46Y2hhbmdlLW1l"
     insecure: true
+    # Transport scheme: "auto" | "https" | "http"
+    scheme: "auto"
+    # Create Harbor project as public when true (default: true)
+    harbor_project_public: true
     push_empty_policy: warn_ok
   image_sync:
     output_dir: "./downloads/images"
-    # OCI pull/push platform (configured). Binary download arch in configs/download.yaml
-    # is still hardcoded amd64 — see H8 TODO(incomplete multi-arch download) there; do not strip.
     platform: "linux/amd64"
     insecure: true
     retries: 3
     layer_concurrency: 4
     http_timeout_secs: 600
   pki_dir: "./pki"
+  # Certificate validity period (99y default; "8760h" / "1y" / "10y" also supported)
+  cert_validity: "867240h"
   kube_version: "v1.35.6"
   etcd_version: "v3.6.12"
   containerd_version: "1.7.32"

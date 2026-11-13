@@ -1,70 +1,71 @@
-- name: Play 0 - Clean up previous Kubernetes installation if detected
+- name: Play 0 - Clean up previous Kubernetes installation when force_reinstall is enabled
   hosts: k8s_cluster
   tasks:
-    - name: Detect if Kubernetes or Etcd residual files exist
-      shell: "if [ -d /etc/kubernetes ] || [ -d /var/lib/etcd ] || [ -d /etc/etcd ]; then echo 'true'; else echo 'false'; fi"
-      register: k8s_installed
     - name: Stop and disable kubelet service
       systemd:
         name: kubelet
         state: stopped
         enabled: false
-      when: 'eq .k8s_installed.stdout "true"'
-      ignore_errors: true
-    - name: Stop and disable etcd-snap-watcher service
-      systemd:
-        name: etcd-snap-watcher
-        state: stopped
-        enabled: false
-      when: 'eq .k8s_installed.stdout "true"'
+      when: 'eq (printf "%v" (default false .force_reinstall)) "true"'
       ignore_errors: true
     - name: Stop and disable etcd service
       systemd:
         name: etcd
         state: stopped
         enabled: false
-      when: 'eq .k8s_installed.stdout "true"'
+      when: 'eq (printf "%v" (default false .force_reinstall)) "true"'
       ignore_errors: true
     - name: Stop and disable containerd service
       systemd:
         name: containerd
         state: stopped
         enabled: false
-      when: 'eq .k8s_installed.stdout "true"'
+      when: 'eq (printf "%v" (default false .force_reinstall)) "true"'
       ignore_errors: true
     - name: Run kubeadm reset
       shell: "kubeadm reset -f || true"
-      when: 'eq .k8s_installed.stdout "true"'
+      when: 'eq (printf "%v" (default false .force_reinstall)) "true"'
       ignore_errors: true
     - name: Unmount all kubelet mounts
       shell: 'mount | grep kubelet | cut -d" " -f3 | xargs -r umount || true'
-      when: 'eq .k8s_installed.stdout "true"'
+      when: 'eq (printf "%v" (default false .force_reinstall)) "true"'
       ignore_errors: true
     - name: Clean up systemd unit files
-      shell: "rm -f /etc/systemd/system/kubelet.service /etc/systemd/system/containerd.service /etc/systemd/system/etcd.service /etc/systemd/system/etcd-snap-watcher.service && systemctl daemon-reload"
-      when: 'eq .k8s_installed.stdout "true"'
+      shell: "rm -f /etc/systemd/system/kubelet.service /etc/systemd/system/containerd.service /etc/systemd/system/etcd.service && systemctl daemon-reload"
+      when: 'eq (printf "%v" (default false .force_reinstall)) "true"'
       ignore_errors: true
-    - name: Clean up all Kubernetes and etcd files and directories
-      shell: "rm -rf /etc/kubernetes /etc/etcd /var/lib/etcd /var/lib/kubelet /var/lib/cni /etc/cni /opt/cni /var/log/pods /var/log/containers /etc/containerd /var/run/calico /var/run/node-cache /etc/apiserver /etc/sysctl.d/99-kubernetes.conf"
-      when: 'eq .k8s_installed.stdout "true"'
+    - name: Clean up Kubernetes and Etcd directories
+      shell: "rm -rf /etc/kubernetes /etc/etcd /etc/ssl/etcd /var/lib/etcd /var/lib/kubelet /var/lib/cni /etc/cni /opt/cni /var/log/pods /var/log/containers /etc/containerd /var/run/calico /var/run/cilium /var/run/node-cache /etc/apiserver /etc/sysctl.d/99-kubernetes.conf"
+      when: 'eq (printf "%v" (default false .force_reinstall)) "true"'
       ignore_errors: true
-    - name: Clean up binaries
-      shell: "rm -f /usr/local/bin/containerd* /usr/local/bin/runc /usr/local/bin/etcd* /usr/bin/kubeadm /usr/bin/kubelet /usr/bin/kubectl /usr/bin/helm"
-      when: 'eq .k8s_installed.stdout "true"'
+    - name: Clean up virtual network interfaces and VIP
+      shell: |
+        for iface in cilium_host cilium_net cilium_vxlan nodelocaldns; do
+          ip link delete "$iface" 2>/dev/null || true
+        done
+        ip addr del {{ index (splitList ":" .control_plane_endpoint) 0 }}/32 dev {{ .vip_interface }} 2>/dev/null || true
+      when: 'eq (printf "%v" (default false .force_reinstall)) "true"'
       ignore_errors: true
-    - name: Reset iptables rules
-      shell: "iptables -F && iptables -t nat -F && iptables -t mangle -F && iptables -X || true"
-      when: 'eq .k8s_installed.stdout "true"'
+    - name: Reset iptables rules including raw table
+      shell: "iptables -F && iptables -t nat -F && iptables -t mangle -F && iptables -t raw -F && iptables -X && iptables -t nat -X && iptables -t mangle -X && iptables -t raw -X || true"
+      when: 'eq (printf "%v" (default false .force_reinstall)) "true"'
       ignore_errors: true
-    - name: Remove temporary images upload tars
-      shell: "rm -f /tmp/rtkk_img_*.tar"
-      when: 'eq .k8s_installed.stdout "true"'
-      ignore_errors: true
+
 - name: Play 1 - Prepare Node System Configurations
-  hosts: k8s_cluster
+  hosts: all
   tasks:
-    - name: Disable swap
+    - name: Disable swap permanently
       shell: "swapoff -a && sed -ri '/^[^#]*swap/s/^/#/' /etc/fstab"
+    - name: Synchronize cluster hosts entries in /etc/hosts
+      shell: |
+        sed -i '/# RTKK HOSTS START/,/# RTKK HOSTS END/d' /etc/hosts
+        cat <<'EOF' >> /etc/hosts
+        # RTKK HOSTS START
+        {{- range $h := .groups.all }}
+        {{ index $.hostvars $h "ip" }} {{ $h }}
+        {{- end }}
+        # RTKK HOSTS END
+        EOF
     - name: Load bridge netfilter module
       modprobe:
         name: br_netfilter
@@ -87,58 +88,89 @@
         name: net.bridge.bridge-nf-call-iptables
         value: "1"
         sysctl_file: "/etc/sysctl.d/99-kubernetes.conf"
-    - name: Ensure upstream DNS is configured in resolv.conf
-      shell: "grep -q 'nameserver' /etc/resolv.conf || echo 'nameserver {{ .dns_upstream }}' > /etc/resolv.conf"
-- name: Play 2 - Install Containerd Runtime
+    - name: Ensure upstream DNS is configured when resolv.conf has no nameserver
+      shell: "grep -q 'nameserver' /etc/resolv.conf || echo 'nameserver {{ .dns_upstream }}' >> /etc/resolv.conf"
+    - name: Detect active upstream resolv.conf path for kubelet
+      shell: "if [ -f /run/systemd/resolve/resolv.conf ] && grep -q '127.0.0.53' /etc/resolv.conf 2>/dev/null; then printf '/run/systemd/resolve/resolv.conf'; else printf '/etc/resolv.conf'; fi"
+      register: detected_resolv_conf
+
+- name: Play 2 - Install Containerd Runtime and Kubernetes Binaries
   hosts: k8s_cluster
   tasks:
     - name: Copy containerd archive
       copy:
         src: "./downloads/tar/containerd.tar.gz"
         dest: "/tmp/containerd.tar.gz"
+        mode: "0644"
     - name: Extract containerd binary package
       shell: "tar -C /usr/local -xzf /tmp/containerd.tar.gz && rm -f /tmp/containerd.tar.gz"
     - name: Copy runc binary
       copy:
         src: "./downloads/bin/runc"
         dest: "/usr/local/bin/runc"
-        mode: 0755
-    - name: Create CNI directories
+        mode: "0755"
+    - name: Create CNI and containerd configuration directories
       command: "mkdir -p /opt/cni/bin /etc/cni/net.d /etc/containerd"
     - name: Copy CNI plugins archive
       copy:
         src: "./downloads/tar/cni-plugins.tgz"
         dest: "/tmp/cni-plugins.tgz"
+        mode: "0644"
     - name: Extract CNI plugins package
       shell: "tar -C /opt/cni/bin -xzf /tmp/cni-plugins.tgz && rm -f /tmp/cni-plugins.tgz"
     - name: Generate containerd configuration
       template:
-        src: "./tmpl/templates/containerd-config.toml.gtmpl"
+        src: "templates/containerd-config.toml.gtmpl"
         dest: "/etc/containerd/config.toml"
-        mode: 0644
+        mode: "0644"
     - name: Create certs.d directories for public registries
       command: "mkdir -p /etc/containerd/certs.d/{{ .item }}"
       with_items: "{{ .public_registries }}"
     - name: Create certs.d directory for private registry
-      command: "mkdir -p /etc/containerd/certs.d/{{ index (splitList \"/\" .registry.url) 0 }}"
-    - name: Write hosts.toml for public registries HTTP redirect
+      command: 'mkdir -p /etc/containerd/certs.d/{{ index (splitList "/" .registry.url) 0 }}'
+    - name: Write HTTPS hosts.toml for public registries
       copy:
         content: |
           server = "https://{{ .item }}"
-          [host."http://{{ .item }}"]
+          [host."https://{{ .item }}"]
             capabilities = ["pull", "resolve"]
         dest: "/etc/containerd/certs.d/{{ .item }}/hosts.toml"
+        mode: "0644"
       with_items: "{{ .public_registries }}"
-    - name: Write hosts.toml for local registry IP (HTTP + Basic auth)
+    - name: Write access-restricted hosts.toml for private registry
       copy:
         content: |
-          server = "http://{{ index (splitList "/" .registry.url) 0 }}"
-          [host."http://{{ index (splitList "/" .registry.url) 0 }}"]
+          {{- $regHost := index (splitList "/" .registry.url) 0 -}}
+          {{- $scheme := default "auto" .registry.scheme -}}
+          {{- if eq $scheme "http" }}
+          server = "http://{{ $regHost }}"
+          [host."http://{{ $regHost }}"]
+            capabilities = ["pull", "resolve"]
+            skip_verify = {{ if .registry.insecure }}true{{ else }}false{{ end }}
+            [host."http://{{ $regHost }}".header]
+              authorization = "Basic {{ .registry.auth_basic }}"
+          {{- else if eq $scheme "https" }}
+          server = "https://{{ $regHost }}"
+          [host."https://{{ $regHost }}"]
+            capabilities = ["pull", "resolve"]
+            skip_verify = {{ if .registry.insecure }}true{{ else }}false{{ end }}
+            [host."https://{{ $regHost }}".header]
+              authorization = "Basic {{ .registry.auth_basic }}"
+          {{- else }}
+          server = "https://{{ $regHost }}"
+          [host."https://{{ $regHost }}"]
+            capabilities = ["pull", "resolve"]
+            skip_verify = {{ if .registry.insecure }}true{{ else }}false{{ end }}
+            [host."https://{{ $regHost }}".header]
+              authorization = "Basic {{ .registry.auth_basic }}"
+          [host."http://{{ $regHost }}"]
             capabilities = ["pull", "resolve"]
             skip_verify = true
-            [host."http://{{ index (splitList "/" .registry.url) 0 }}".header]
+            [host."http://{{ $regHost }}".header]
               authorization = "Basic {{ .registry.auth_basic }}"
-        dest: "/etc/containerd/certs.d/{{ index (splitList \"/\" .registry.url) 0 }}/hosts.toml"
+          {{- end }}
+        dest: '/etc/containerd/certs.d/{{ index (splitList "/" .registry.url) 0 }}/hosts.toml'
+        mode: "0600"
     - name: Setup containerd systemd service
       copy:
         content: |
@@ -158,115 +190,129 @@
           [Install]
           WantedBy=multi-user.target
         dest: "/etc/systemd/system/containerd.service"
-        mode: 0644
+        mode: "0644"
     - name: Enable and start containerd service
       systemd:
         name: containerd
         enabled: true
-        state: restarted
+        state: started
         daemon_reload: true
-    - name: Copy K8s binaries to all nodes
+    - name: Copy Kubernetes CLI and node binaries
       copy:
         src: "./downloads/bin/{{ .item }}"
         dest: "/usr/bin/{{ .item }}"
-        mode: 0755
+        mode: "0755"
       with_items:
         - kubeadm
         - kubelet
         - kubectl
         - helm
-    - name: Reset kubeadm on all nodes
-      shell: "kubeadm reset -f || true"
+
 - name: Play 3 - Deploy High Availability Etcd Cluster
   hosts: etcd
   tasks:
-    - name: Create etcd directories
-      command: "mkdir -p /etc/etcd/pki /var/lib/etcd /var/lib/etcd/member/snap /var/lib/etcd/member/wal"
-    - name: Copy etcd archive
+    - name: Create Etcd data and PKI directories
+      shell: "mkdir -p /etc/ssl/etcd/ssl /var/lib/etcd && chmod 0700 /etc/ssl/etcd/ssl /var/lib/etcd"
+    - name: Copy Etcd archive
       copy:
         src: "./downloads/tar/etcd.tar.gz"
         dest: "/tmp/etcd.tar.gz"
-    - name: Extract etcd binaries
-      shell: "mkdir -p /tmp/etcd-bin && tar -C /tmp/etcd-bin --strip-components=1 -xzf /tmp/etcd.tar.gz && mv /tmp/etcd-bin/etcd* /usr/local/bin/ && rm -rf /tmp/etcd-bin && rm -f /tmp/etcd.tar.gz"
-    - name: Generate etcd CA key and certificate
+        mode: "0644"
+    - name: Extract Etcd binaries
+      shell: "mkdir -p /tmp/etcd-bin && tar -C /tmp/etcd-bin --strip-components=1 -xzf /tmp/etcd.tar.gz && install -m 0755 /tmp/etcd-bin/etcd /tmp/etcd-bin/etcdctl /usr/local/bin/ && rm -rf /tmp/etcd-bin /tmp/etcd.tar.gz"
+    - name: Generate Etcd CA certificate and private key
       gen_cert:
         cn: "etcd-ca"
-        out_key: "/etc/etcd/pki/ca.key"
-        out_cert: "/etc/etcd/pki/ca.pem"
+        out_key: "/etc/ssl/etcd/ssl/ca.key"
+        out_cert: "/etc/ssl/etcd/ssl/ca.pem"
         is_ca: true
+        state: "ifnotpresent"
+        date: '{{ default "867240h" .cert_validity }}'
       run_once: true
-    - name: Copy etcd CA key and certificate to all nodes
+    - name: Generate API server Etcd client certificate
+      gen_cert:
+        cn: "kube-apiserver-etcd-client"
+        out_key: "/etc/ssl/etcd/ssl/apiserver-etcd-client-key.pem"
+        out_cert: "/etc/ssl/etcd/ssl/apiserver-etcd-client.pem"
+        root_key: "/etc/ssl/etcd/ssl/ca.key"
+        root_cert: "/etc/ssl/etcd/ssl/ca.pem"
+        state: "ifnotpresent"
+        date: '{{ default "867240h" .cert_validity }}'
+      run_once: true
+    - name: Fetch Etcd CA certificate to local staging PKI
+      fetch:
+        src: "/etc/ssl/etcd/ssl/ca.pem"
+        dest: '{{ default "./pki" .pki_dir }}/etcd/ca.pem'
+      run_once: true
+    - name: Fetch Etcd CA private key to local staging PKI
+      fetch:
+        src: "/etc/ssl/etcd/ssl/ca.key"
+        dest: '{{ default "./pki" .pki_dir }}/etcd/ca.key'
+      run_once: true
+    - name: Fetch API server Etcd client certificate to local staging PKI
+      fetch:
+        src: "/etc/ssl/etcd/ssl/apiserver-etcd-client.pem"
+        dest: '{{ default "./pki" .pki_dir }}/etcd/apiserver-etcd-client.pem'
+      run_once: true
+    - name: Fetch API server Etcd client key to local staging PKI
+      fetch:
+        src: "/etc/ssl/etcd/ssl/apiserver-etcd-client-key.pem"
+        dest: '{{ default "./pki" .pki_dir }}/etcd/apiserver-etcd-client-key.pem'
+      run_once: true
+    - name: Distribute Etcd CA certificate to all Etcd nodes
       copy:
-        src: "./pki/ca.pem"
-        dest: "/etc/etcd/pki/ca.pem"
-        mode: 0644
-    - name: Copy etcd CA key to all nodes
+        src: '{{ default "./pki" .pki_dir }}/etcd/ca.pem'
+        dest: "/etc/ssl/etcd/ssl/ca.pem"
+        mode: "0644"
+    - name: Distribute Etcd CA key to all Etcd nodes
       copy:
-        src: "./pki/ca.key"
-        dest: "/etc/etcd/pki/ca.key"
-        mode: 0600
-    - name: Generate etcd server certificate
+        src: '{{ default "./pki" .pki_dir }}/etcd/ca.key'
+        dest: "/etc/ssl/etcd/ssl/ca.key"
+        mode: "0600"
+    - name: Generate Etcd server TLS certificate
       gen_cert:
         cn: "{{ .inventory_hostname }}"
-        out_key: "/etc/etcd/pki/etcd-key.pem"
-        out_cert: "/etc/etcd/pki/etcd.pem"
-        root_key: "/etc/etcd/pki/ca.key"
-        root_cert: "/etc/etcd/pki/ca.pem"
+        out_key: "/etc/ssl/etcd/ssl/etcd-key.pem"
+        out_cert: "/etc/ssl/etcd/ssl/etcd.pem"
+        root_key: "/etc/ssl/etcd/ssl/ca.key"
+        root_cert: "/etc/ssl/etcd/ssl/ca.pem"
+        state: "ifnotpresent"
+        date: '{{ default "867240h" .cert_validity }}'
         sans:
           - "127.0.0.1"
           - "localhost"
+          - "{{ .inventory_hostname }}"
           - "{{ .ip }}"
-    - name: Generate etcd peer certificate
+    - name: Generate Etcd peer TLS certificate
       gen_cert:
         cn: "{{ .inventory_hostname }}"
-        out_key: "/etc/etcd/pki/peer-key.pem"
-        out_cert: "/etc/etcd/pki/peer.pem"
-        root_key: "/etc/etcd/pki/ca.key"
-        root_cert: "/etc/etcd/pki/ca.pem"
+        out_key: "/etc/ssl/etcd/ssl/peer-key.pem"
+        out_cert: "/etc/ssl/etcd/ssl/peer.pem"
+        root_key: "/etc/ssl/etcd/ssl/ca.key"
+        root_cert: "/etc/ssl/etcd/ssl/ca.pem"
+        state: "ifnotpresent"
+        date: '{{ default "867240h" .cert_validity }}'
         sans:
+          - "127.0.0.1"
+          - "localhost"
+          - "{{ .inventory_hostname }}"
           - "{{ .ip }}"
-    - name: Generate etcd client certificate (for API server)
-      gen_cert:
-        cn: "etcd-client"
-        out_key: "/etc/etcd/pki/etcd-client-key.pem"
-        out_cert: "/etc/etcd/pki/etcd-client.pem"
-        root_key: "/etc/etcd/pki/ca.key"
-        root_cert: "/etc/etcd/pki/ca.pem"
-    - name: Render etcd systemd unit service file
+    - name: Render Etcd systemd unit service file
       template:
-        src: "./tmpl/templates/etcd.service.gtmpl"
+        src: "templates/etcd.service.gtmpl"
         dest: "/etc/systemd/system/etcd.service"
-        mode: 0644
-    - name: Enable and start etcd cluster service
+        mode: "0644"
+    - name: Enable and start Etcd cluster service
       systemd:
         name: etcd
         enabled: true
         state: started
         daemon_reload: true
-    - name: Create etcd snapshot directory watcher service
-      copy:
-        content: |
-          [Unit]
-          Description=Etcd Snapshot Directory Watcher
-          After=etcd.service
-          [Service]
-          Type=simple
-          ExecStart=/bin/sh -c 'while true; do mkdir -p /var/lib/etcd/member/snap; sleep 1; done'
-          Restart=always
-          [Install]
-          WantedBy=multi-user.target
-        dest: "/etc/systemd/system/etcd-snap-watcher.service"
-        mode: 0644
-    - name: Enable and start etcd snapshot directory watcher service
-      systemd:
-        name: etcd-snap-watcher
-        enabled: true
-        state: started
-        daemon_reload: true
-    - name: Wait for etcd cluster to be healthy
-      shell: "etcdctl --cacert=/etc/etcd/pki/ca.pem --cert=/etc/etcd/pki/etcd.pem --key=/etc/etcd/pki/etcd-key.pem --endpoints={{ .etcd_endpoints_str }} endpoint health"
+    - name: Wait for Etcd cluster endpoints to become healthy
+      shell: "etcdctl --cacert=/etc/ssl/etcd/ssl/ca.pem --cert=/etc/ssl/etcd/ssl/etcd.pem --key=/etc/ssl/etcd/ssl/etcd-key.pem --endpoints={{ .etcd_endpoints_str }} endpoint health"
       retries: 30
       delay: 5
+
 - name: Play 4 - Deploy Kubernetes Control Plane
   hosts: kube_control_plane
   tasks:
@@ -288,15 +334,34 @@
           [Install]
           WantedBy=multi-user.target
         dest: "/etc/systemd/system/kubelet.service"
-        mode: 0644
+        mode: "0644"
     - name: Enable kubelet service
       systemd:
         name: kubelet
         enabled: true
         daemon_reload: true
-    - name: Create K8s config & certificate directories
-      command: "mkdir -p /etc/kubernetes/pki /etc/kubernetes/manifests /etc/apiserver/pki"
-    - name: Create kube-vip static pod manifest
+    - name: Create Kubernetes configuration and Etcd client PKI directories
+      command: "mkdir -p /etc/kubernetes/pki /etc/kubernetes/manifests /etc/ssl/etcd/ssl"
+    - name: Copy Etcd CA certificate to control plane nodes
+      copy:
+        src: '{{ default "./pki" .pki_dir }}/etcd/ca.pem'
+        dest: "/etc/ssl/etcd/ssl/ca.pem"
+        mode: "0644"
+    - name: Copy API server Etcd client certificate to control plane nodes
+      copy:
+        src: '{{ default "./pki" .pki_dir }}/etcd/apiserver-etcd-client.pem'
+        dest: "/etc/ssl/etcd/ssl/apiserver-etcd-client.pem"
+        mode: "0644"
+    - name: Copy API server Etcd client key to control plane nodes
+      copy:
+        src: '{{ default "./pki" .pki_dir }}/etcd/apiserver-etcd-client-key.pem'
+        dest: "/etc/ssl/etcd/ssl/apiserver-etcd-client-key.pem"
+        mode: "0600"
+    - name: Detect whether first control plane node is already initialized
+      shell: "if [ -f /etc/kubernetes/admin.conf ]; then printf 'true'; else printf 'false'; fi"
+      when: 'eq .inventory_hostname .first_control_plane'
+      register: first_cp_initialized
+    - name: Deploy kube-vip static pod manifest on first control plane node
       copy:
         content: |
           apiVersion: v1
@@ -359,101 +424,182 @@
             hostNetwork: true
             volumes:
             - hostPath:
-                path: /etc/kubernetes/admin.conf
+                path: /etc/kubernetes/super-admin.conf
               name: kubeconfig
         dest: "/etc/kubernetes/manifests/kube-vip.yaml"
-        mode: 0644
-    - name: Share etcd client certificates to apiserver PKI directory
-      shell: "mkdir -p /etc/apiserver/pki && cp /etc/etcd/pki/etcd-client* /etc/apiserver/pki/ && cp /etc/etcd/pki/ca.pem /etc/apiserver/pki/etcd-ca.pem"
-    - name: Render kubeadm configuration file
+        mode: "0644"
+      when: 'eq .inventory_hostname .first_control_plane'
+    - name: Render kubeadm configuration file on first control plane node
       template:
-        src: "./tmpl/templates/kubeadm-config.yaml.gtmpl"
+        src: "templates/kubeadm-config.yaml.gtmpl"
         dest: "/etc/kubernetes/kubeadm-config.yaml"
-        mode: 0644
-    - name: Initialize Kubernetes Control Plane Node (First Master)
-      shell: "kubeadm init --config /etc/kubernetes/kubeadm-config.yaml --upload-certs || (echo kubeadm_init_failed_retrying_phases && sleep 15 && kubeadm init phase mark-control-plane --config /etc/kubernetes/kubeadm-config.yaml && kubeadm init phase bootstrap-token --config /etc/kubernetes/kubeadm-config.yaml && kubeadm init phase addon all --config /etc/kubernetes/kubeadm-config.yaml)"
-      run_once: true
+        mode: "0644"
+      when: 'eq .inventory_hostname .first_control_plane'
+    - name: Initialize first Kubernetes control plane node
+      shell: "kubeadm init --config /etc/kubernetes/kubeadm-config.yaml --upload-certs"
+      when: 'and (eq .inventory_hostname .first_control_plane) (ne .first_cp_initialized.stdout "true")'
       register: init_output
-    - name: Setup local root kubeconfig path
-      shell: "mkdir -p $HOME/.kube && cp -f /etc/kubernetes/admin.conf $HOME/.kube/config"
-      run_once: true
-    - name: Extract join command parameters
+    - name: Configure kubeconfig for root user on first control plane node
+      shell: "mkdir -p $HOME/.kube && cp -f /etc/kubernetes/admin.conf $HOME/.kube/config && chmod 0600 $HOME/.kube/config"
+      when: 'eq .inventory_hostname .first_control_plane'
+    - name: Wait for Kubernetes API server readiness on first control plane node
+      shell: "kubectl --kubeconfig=/etc/kubernetes/admin.conf get --raw=/readyz"
+      when: 'eq .inventory_hostname .first_control_plane'
+      retries: 30
+      delay: 5
+    - name: Generate cluster join command on first control plane node
       shell: "kubeadm token create --print-join-command"
-      run_once: true
+      when: 'eq .inventory_hostname .first_control_plane'
       register: join_cmd
-    - name: Fetch K8s CA certificate
+    - name: Fetch Kubernetes CA certificate from first control plane
       fetch:
         src: "/etc/kubernetes/pki/ca.crt"
-        dest: "{{ .pki_dir }}/kubernetes/ca.crt"
+        dest: '{{ default "./pki" .pki_dir }}/kubernetes/ca.crt'
       when: 'eq .inventory_hostname .first_control_plane'
-    - name: Fetch K8s CA key
+    - name: Fetch Kubernetes CA key from first control plane
       fetch:
         src: "/etc/kubernetes/pki/ca.key"
-        dest: "{{ .pki_dir }}/kubernetes/ca.key"
+        dest: '{{ default "./pki" .pki_dir }}/kubernetes/ca.key'
       when: 'eq .inventory_hostname .first_control_plane'
-    - name: Fetch K8s SA key
+    - name: Fetch Kubernetes service account private key from first control plane
       fetch:
         src: "/etc/kubernetes/pki/sa.key"
-        dest: "{{ .pki_dir }}/sa.key"
+        dest: '{{ default "./pki" .pki_dir }}/kubernetes/sa.key'
       when: 'eq .inventory_hostname .first_control_plane'
-    - name: Fetch K8s SA public key
+    - name: Fetch Kubernetes service account public key from first control plane
       fetch:
         src: "/etc/kubernetes/pki/sa.pub"
-        dest: "{{ .pki_dir }}/sa.pub"
+        dest: '{{ default "./pki" .pki_dir }}/kubernetes/sa.pub'
       when: 'eq .inventory_hostname .first_control_plane'
-    - name: Fetch K8s front-proxy CA certificate
+    - name: Fetch front-proxy CA certificate from first control plane
       fetch:
         src: "/etc/kubernetes/pki/front-proxy-ca.crt"
-        dest: "{{ .pki_dir }}/front-proxy-ca.crt"
+        dest: '{{ default "./pki" .pki_dir }}/kubernetes/front-proxy-ca.crt'
       when: 'eq .inventory_hostname .first_control_plane'
-    - name: Fetch K8s front-proxy CA key
+    - name: Fetch front-proxy CA key from first control plane
       fetch:
         src: "/etc/kubernetes/pki/front-proxy-ca.key"
-        dest: "{{ .pki_dir }}/front-proxy-ca.key"
+        dest: '{{ default "./pki" .pki_dir }}/kubernetes/front-proxy-ca.key'
       when: 'eq .inventory_hostname .first_control_plane'
-    - name: Copy K8s CA certificate to joining masters
+    - name: Detect whether secondary control plane node has already joined
+      shell: "if [ -f /etc/kubernetes/kubelet.conf ]; then printf 'true'; else printf 'false'; fi"
+      when: 'ne .inventory_hostname .first_control_plane'
+      register: secondary_cp_joined
+    - name: Copy Kubernetes CA certificate to joining control plane nodes
       copy:
-        src: "{{ .pki_dir }}/kubernetes/ca.crt"
+        src: '{{ default "./pki" .pki_dir }}/kubernetes/ca.crt'
         dest: "/etc/kubernetes/pki/ca.crt"
-        mode: 0644
-      when: 'ne .inventory_hostname .first_control_plane'
-    - name: Copy K8s CA key to joining masters
+        mode: "0644"
+      when: 'and (ne .inventory_hostname .first_control_plane) (ne .secondary_cp_joined.stdout "true")'
+    - name: Copy Kubernetes CA key to joining control plane nodes
       copy:
-        src: "{{ .pki_dir }}/kubernetes/ca.key"
+        src: '{{ default "./pki" .pki_dir }}/kubernetes/ca.key'
         dest: "/etc/kubernetes/pki/ca.key"
-        mode: 0600
-      when: 'ne .inventory_hostname .first_control_plane'
-    - name: Copy K8s SA key to joining masters
+        mode: "0600"
+      when: 'and (ne .inventory_hostname .first_control_plane) (ne .secondary_cp_joined.stdout "true")'
+    - name: Copy service account private key to joining control plane nodes
       copy:
-        src: "{{ .pki_dir }}/sa.key"
+        src: '{{ default "./pki" .pki_dir }}/kubernetes/sa.key'
         dest: "/etc/kubernetes/pki/sa.key"
-        mode: 0600
-      when: 'ne .inventory_hostname .first_control_plane'
-    - name: Copy K8s SA public key to joining masters
+        mode: "0600"
+      when: 'and (ne .inventory_hostname .first_control_plane) (ne .secondary_cp_joined.stdout "true")'
+    - name: Copy service account public key to joining control plane nodes
       copy:
-        src: "{{ .pki_dir }}/sa.pub"
+        src: '{{ default "./pki" .pki_dir }}/kubernetes/sa.pub'
         dest: "/etc/kubernetes/pki/sa.pub"
-        mode: 0644
-      when: 'ne .inventory_hostname .first_control_plane'
-    - name: Copy K8s front-proxy CA certificate to joining masters
+        mode: "0644"
+      when: 'and (ne .inventory_hostname .first_control_plane) (ne .secondary_cp_joined.stdout "true")'
+    - name: Copy front-proxy CA certificate to joining control plane nodes
       copy:
-        src: "{{ .pki_dir }}/front-proxy-ca.crt"
+        src: '{{ default "./pki" .pki_dir }}/kubernetes/front-proxy-ca.crt'
         dest: "/etc/kubernetes/pki/front-proxy-ca.crt"
-        mode: 0644
-      when: 'ne .inventory_hostname .first_control_plane'
-    - name: Copy K8s front-proxy CA key to joining masters
+        mode: "0644"
+      when: 'and (ne .inventory_hostname .first_control_plane) (ne .secondary_cp_joined.stdout "true")'
+    - name: Copy front-proxy CA key to joining control plane nodes
       copy:
-        src: "{{ .pki_dir }}/front-proxy-ca.key"
+        src: '{{ default "./pki" .pki_dir }}/kubernetes/front-proxy-ca.key'
         dest: "/etc/kubernetes/pki/front-proxy-ca.key"
-        mode: 0600
+        mode: "0600"
+      when: 'and (ne .inventory_hostname .first_control_plane) (ne .secondary_cp_joined.stdout "true")'
+    - name: Join secondary control plane nodes before deploying kube-vip
+      shell: '{{ index .hostvars .first_control_plane "join_cmd" "stdout" }} --control-plane --cri-socket=unix:///var/run/containerd/containerd.sock'
+      when: 'and (ne .inventory_hostname .first_control_plane) (ne .secondary_cp_joined.stdout "true")'
+    - name: Ensure super-admin.conf and root kubeconfig exist on secondary control plane nodes
+      shell: "test -f /etc/kubernetes/super-admin.conf || cp -p /etc/kubernetes/admin.conf /etc/kubernetes/super-admin.conf; mkdir -p $HOME/.kube && cp -f /etc/kubernetes/admin.conf $HOME/.kube/config && chmod 0600 $HOME/.kube/config"
       when: 'ne .inventory_hostname .first_control_plane'
-    - name: Join additional control plane master nodes
-      shell: "{{ index .hostvars .first_control_plane \"join_cmd\" \"stdout\" }} --control-plane --cri-socket=unix:///var/run/containerd/containerd.sock"
+    - name: Deploy kube-vip static pod manifest on joined secondary control plane nodes
+      copy:
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: kube-vip
+            namespace: kube-system
+          spec:
+            containers:
+            - args:
+              - manager
+              env:
+              - name: vip_arp
+                value: "true"
+              - name: port
+                value: '{{ index (splitList ":" .control_plane_endpoint) 1 }}'
+              - name: vip_interface
+                value: "{{ .vip_interface }}"
+              - name: vip_cidr
+                value: "32"
+              - name: cp_enable
+                value: "true"
+              - name: cp_namespace
+                value: kube-system
+              - name: vip_ddns
+                value: "false"
+              - name: svc_enable
+                value: "false"
+              - name: vip_leaderelection
+                value: "true"
+              - name: vip_leaseduration
+                value: "5"
+              - name: vip_renewdeadline
+                value: "3"
+              - name: vip_retryperiod
+                value: "1"
+              - name: lb_enable
+                value: "false"
+              - name: lb_port
+                value: '{{ index (splitList ":" .control_plane_endpoint) 1 }}'
+              - name: address
+                value: '{{ index (splitList ":" .control_plane_endpoint) 0 }}'
+              image: "{{ .registry.url }}/kube-vip:{{ .kube_vip_version }}"
+              imagePullPolicy: IfNotPresent
+              name: kube-vip
+              resources: {}
+              securityContext:
+                capabilities:
+                  add:
+                  - NET_ADMIN
+                  - NET_RAW
+                  - SYS_TIME
+              volumeMounts:
+              - mountPath: /etc/kubernetes/admin.conf
+                name: kubeconfig
+            hostAliases:
+            - hostnames:
+              - kubernetes
+              ip: 127.0.0.1
+            hostNetwork: true
+            volumes:
+            - hostPath:
+                path: /etc/kubernetes/super-admin.conf
+              name: kubeconfig
+        dest: "/etc/kubernetes/manifests/kube-vip.yaml"
+        mode: "0644"
       when: 'ne .inventory_hostname .first_control_plane'
+
 - name: Play 5 - Join Kubernetes Worker Nodes
   hosts: kube_node
   tasks:
-    - name: Create kubelet systemd service file
+    - name: Create kubelet systemd service file on worker nodes
       copy:
         content: |
           [Unit]
@@ -471,34 +617,85 @@
           [Install]
           WantedBy=multi-user.target
         dest: "/etc/systemd/system/kubelet.service"
-        mode: 0644
-    - name: Enable kubelet service
+        mode: "0644"
+    - name: Enable kubelet service on worker nodes
       systemd:
         name: kubelet
         enabled: true
         daemon_reload: true
+    - name: Detect whether worker node has already joined cluster
+      shell: "if [ -f /etc/kubernetes/kubelet.conf ]; then printf 'true'; else printf 'false'; fi"
+      register: worker_joined
     - name: Join worker node to cluster
-      shell: "{{ index .hostvars .first_control_plane \"join_cmd\" \"stdout\" }} --cri-socket=unix:///var/run/containerd/containerd.sock"
-- name: Play 6 - Deploy Kubernetes Addons (Network, Storage, DNS Cache)
+      shell: '{{ index .hostvars .first_control_plane "join_cmd" "stdout" }} --cri-socket=unix:///var/run/containerd/containerd.sock'
+      when: 'ne .worker_joined.stdout "true"'
+
+- name: Play 6 - Deploy Kubernetes Addons (Cilium, OpenEBS LocalPV, NodeLocalDNS)
   hosts: kube_control_plane
   tasks:
-    - name: Create addons directory
-      shell: "mkdir -p /etc/kubernetes/addons"
+    - name: Allow workload scheduling on control plane when no dedicated worker nodes exist
+      shell: "kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true"
+      when: 'and (eq .inventory_hostname .first_control_plane) (eq (len .groups.kube_node) 0)'
+    - name: Create addons and Cilium PKI directories
+      command: "mkdir -p /etc/kubernetes/addons /etc/kubernetes/pki/cilium"
       when: 'eq .inventory_hostname .first_control_plane'
+    - name: Generate Cilium internal CA certificate and key
+      gen_cert:
+        cn: "Cilium CA"
+        out_key: "/etc/kubernetes/pki/cilium/ca.key"
+        out_cert: "/etc/kubernetes/pki/cilium/ca.crt"
+        is_ca: true
+        state: "ifnotpresent"
+        date: '{{ default "867240h" .cert_validity }}'
+      when: 'eq .inventory_hostname .first_control_plane'
+    - name: Generate Hubble server TLS certificate and key
+      gen_cert:
+        cn: "*.default.hubble-grpc.cilium.io"
+        out_key: "/etc/kubernetes/pki/cilium/hubble-server.key"
+        out_cert: "/etc/kubernetes/pki/cilium/hubble-server.crt"
+        root_key: "/etc/kubernetes/pki/cilium/ca.key"
+        root_cert: "/etc/kubernetes/pki/cilium/ca.crt"
+        state: "ifnotpresent"
+        date: '{{ default "867240h" .cert_validity }}'
+        sans:
+          - "*.default.hubble-grpc.cilium.io"
+          - "*.kube-system.hubble-grpc.cilium.io"
+          - "127.0.0.1"
+          - "localhost"
+      when: 'eq .inventory_hostname .first_control_plane'
+    - name: Encode Cilium CA certificate as base64
+      shell: "base64 -w 0 /etc/kubernetes/pki/cilium/ca.crt"
+      when: 'eq .inventory_hostname .first_control_plane'
+      register: cilium_ca_crt
+    - name: Encode Cilium CA private key as base64
+      shell: "base64 -w 0 /etc/kubernetes/pki/cilium/ca.key"
+      when: 'eq .inventory_hostname .first_control_plane'
+      register: cilium_ca_key
+    - name: Encode Hubble server TLS certificate as base64
+      shell: "base64 -w 0 /etc/kubernetes/pki/cilium/hubble-server.crt"
+      when: 'eq .inventory_hostname .first_control_plane'
+      register: hubble_tls_crt
+    - name: Encode Hubble server TLS private key as base64
+      shell: "base64 -w 0 /etc/kubernetes/pki/cilium/hubble-server.key"
+      when: 'eq .inventory_hostname .first_control_plane'
+      register: hubble_tls_key
     - name: Render Cilium manifest
       template:
-        src: tmpl/templates/cilium.yaml.gtmpl
-        dest: /etc/kubernetes/addons/cilium.yaml
+        src: "templates/cilium.yaml.gtmpl"
+        dest: "/etc/kubernetes/addons/cilium.yaml"
+        mode: "0600"
       when: 'eq .inventory_hostname .first_control_plane'
     - name: Render OpenEBS LocalPV manifest
       template:
-        src: tmpl/templates/local-volume.yaml.gtmpl
-        dest: /etc/kubernetes/addons/local-volume.yaml
+        src: "templates/local-volume.yaml.gtmpl"
+        dest: "/etc/kubernetes/addons/local-volume.yaml"
+        mode: "0644"
       when: 'eq .inventory_hostname .first_control_plane'
     - name: Render NodeLocalDNS manifest
       template:
-        src: tmpl/templates/nodelocaldns.yaml.gtmpl
-        dest: /etc/kubernetes/addons/nodelocaldns.yaml
+        src: "templates/nodelocaldns.yaml.gtmpl"
+        dest: "/etc/kubernetes/addons/nodelocaldns.yaml"
+        mode: "0644"
       when: 'eq .inventory_hostname .first_control_plane'
     - name: Apply Cilium manifest
       shell: "kubectl apply -f /etc/kubernetes/addons/cilium.yaml"
@@ -509,25 +706,60 @@
     - name: Apply NodeLocalDNS manifest
       shell: "kubectl apply -f /etc/kubernetes/addons/nodelocaldns.yaml"
       when: 'eq .inventory_hostname .first_control_plane'
-- name: Play 7 - Backup Control Plane and Global Configurations
+
+- name: Play 7 - Backup Etcd PKI and Unit Configurations
+  hosts: etcd
+  tasks:
+    - name: Backup global Etcd CA certificate
+      fetch:
+        src: "/etc/ssl/etcd/ssl/ca.pem"
+        dest: "./rtkk_bak/global_pki/etcd/ca.pem"
+      run_once: true
+    - name: Backup global Etcd CA key
+      fetch:
+        src: "/etc/ssl/etcd/ssl/ca.key"
+        dest: "./rtkk_bak/global_pki/etcd/ca.key"
+      run_once: true
+    - name: Backup node Etcd server certificate
+      fetch:
+        src: "/etc/ssl/etcd/ssl/etcd.pem"
+        dest: "./rtkk_bak/nodes/{{ .ip }}/pki/etcd/etcd.pem"
+    - name: Backup node Etcd server key
+      fetch:
+        src: "/etc/ssl/etcd/ssl/etcd-key.pem"
+        dest: "./rtkk_bak/nodes/{{ .ip }}/pki/etcd/etcd-key.pem"
+    - name: Backup node Etcd peer certificate
+      fetch:
+        src: "/etc/ssl/etcd/ssl/peer.pem"
+        dest: "./rtkk_bak/nodes/{{ .ip }}/pki/etcd/peer.pem"
+    - name: Backup node Etcd peer key
+      fetch:
+        src: "/etc/ssl/etcd/ssl/peer-key.pem"
+        dest: "./rtkk_bak/nodes/{{ .ip }}/pki/etcd/peer-key.pem"
+    - name: Backup node Etcd systemd unit file
+      fetch:
+        src: "/etc/systemd/system/etcd.service"
+        dest: "./rtkk_bak/nodes/{{ .ip }}/configs/systemd/etcd.service"
+
+- name: Play 8 - Backup Control Plane and Node Configurations
   hosts: kube_control_plane
   tasks:
-    - name: Backup global K8s CA certificate
+    - name: Backup global Kubernetes CA certificate
       fetch:
         src: "/etc/kubernetes/pki/ca.crt"
         dest: "./rtkk_bak/global_pki/kubernetes/ca.crt"
       when: 'eq .inventory_hostname .first_control_plane'
-    - name: Backup global K8s CA key
+    - name: Backup global Kubernetes CA key
       fetch:
         src: "/etc/kubernetes/pki/ca.key"
         dest: "./rtkk_bak/global_pki/kubernetes/ca.key"
       when: 'eq .inventory_hostname .first_control_plane'
-    - name: Backup global K8s SA key
+    - name: Backup global service account private key
       fetch:
         src: "/etc/kubernetes/pki/sa.key"
         dest: "./rtkk_bak/global_pki/kubernetes/sa.key"
       when: 'eq .inventory_hostname .first_control_plane'
-    - name: Backup global K8s SA public key
+    - name: Backup global service account public key
       fetch:
         src: "/etc/kubernetes/pki/sa.pub"
         dest: "./rtkk_bak/global_pki/kubernetes/sa.pub"
@@ -542,80 +774,47 @@
         src: "/etc/kubernetes/pki/front-proxy-ca.key"
         dest: "./rtkk_bak/global_pki/kubernetes/front-proxy-ca.key"
       when: 'eq .inventory_hostname .first_control_plane'
-    - name: Backup global etcd CA certificate
-      fetch:
-        src: "/etc/etcd/pki/ca.pem"
-        dest: "./rtkk_bak/global_pki/etcd/ca.pem"
-      when: 'eq .inventory_hostname .first_control_plane'
-    - name: Backup global etcd CA key
-      fetch:
-        src: "/etc/etcd/pki/ca.key"
-        dest: "./rtkk_bak/global_pki/etcd/ca.key"
-      when: 'eq .inventory_hostname .first_control_plane'
-    - name: Backup apiserver server certificate
+    - name: Backup API server certificate
       fetch:
         src: "/etc/kubernetes/pki/apiserver.crt"
         dest: "./rtkk_bak/nodes/{{ .ip }}/pki/apiserver.crt"
-    - name: Backup apiserver server key
+    - name: Backup API server private key
       fetch:
         src: "/etc/kubernetes/pki/apiserver.key"
         dest: "./rtkk_bak/nodes/{{ .ip }}/pki/apiserver.key"
-    - name: Backup apiserver kubelet client certificate
+    - name: Backup API server kubelet client certificate
       fetch:
         src: "/etc/kubernetes/pki/apiserver-kubelet-client.crt"
         dest: "./rtkk_bak/nodes/{{ .ip }}/pki/apiserver-kubelet-client.crt"
-    - name: Backup apiserver kubelet client key
+    - name: Backup API server kubelet client key
       fetch:
         src: "/etc/kubernetes/pki/apiserver-kubelet-client.key"
         dest: "./rtkk_bak/nodes/{{ .ip }}/pki/apiserver-kubelet-client.key"
-    - name: Backup etcd server certificate
+    - name: Backup API server Etcd client certificate
       fetch:
-        src: "/etc/etcd/pki/etcd.pem"
-        dest: "./rtkk_bak/nodes/{{ .ip }}/pki/etcd/etcd.pem"
-    - name: Backup etcd server key
-      fetch:
-        src: "/etc/etcd/pki/etcd-key.pem"
-        dest: "./rtkk_bak/nodes/{{ .ip }}/pki/etcd/etcd-key.pem"
-    - name: Backup etcd peer certificate
-      fetch:
-        src: "/etc/etcd/pki/peer.pem"
-        dest: "./rtkk_bak/nodes/{{ .ip }}/pki/etcd/peer.pem"
-    - name: Backup etcd peer key
-      fetch:
-        src: "/etc/etcd/pki/peer-key.pem"
-        dest: "./rtkk_bak/nodes/{{ .ip }}/pki/etcd/peer-key.pem"
-    - name: Backup apiserver etcd client certificate
-      fetch:
-        src: "/etc/apiserver/pki/etcd-client.pem"
+        src: "/etc/ssl/etcd/ssl/apiserver-etcd-client.pem"
         dest: "./rtkk_bak/nodes/{{ .ip }}/pki/apiserver-etcd-client.pem"
-    - name: Backup apiserver etcd client key
+    - name: Backup API server Etcd client key
       fetch:
-        src: "/etc/apiserver/pki/etcd-client-key.pem"
+        src: "/etc/ssl/etcd/ssl/apiserver-etcd-client-key.pem"
         dest: "./rtkk_bak/nodes/{{ .ip }}/pki/apiserver-etcd-client-key.pem"
     - name: Backup admin kubeconfig
       fetch:
         src: "/etc/kubernetes/admin.conf"
         dest: "./rtkk_bak/nodes/{{ .ip }}/kubeconfig/admin.conf"
-    - name: Backup kubeadm config file
-      fetch:
-        src: "/etc/kubernetes/kubeadm-config.yaml"
-        dest: "./rtkk_bak/nodes/{{ .ip }}/configs/kubeadm-config.yaml"
     - name: Backup kube-vip static pod manifest
       fetch:
         src: "/etc/kubernetes/manifests/kube-vip.yaml"
         dest: "./rtkk_bak/nodes/{{ .ip }}/configs/manifests/kube-vip.yaml"
-    - name: Backup etcd systemd unit service file
-      fetch:
-        src: "/etc/systemd/system/etcd.service"
-        dest: "./rtkk_bak/nodes/{{ .ip }}/configs/systemd/etcd.service"
-- name: Play 8 - Backup Common Node Configurations
+
+- name: Play 9 - Backup Common Node Configurations and Clean Staging PKI
   hosts: k8s_cluster
   tasks:
     - name: Backup node kubelet systemd service file
       fetch:
         src: "/etc/systemd/system/kubelet.service"
         dest: "./rtkk_bak/nodes/{{ .ip }}/configs/systemd/kubelet.service"
-    - name: Backup node containerd config
+    - name: Backup node containerd configuration
       fetch:
         src: "/etc/containerd/config.toml"
         dest: "./rtkk_bak/nodes/{{ .ip }}/configs/containerd-config.toml"
@@ -623,7 +822,7 @@
       fetch:
         src: "/etc/kubernetes/kubelet.conf"
         dest: "./rtkk_bak/nodes/{{ .ip }}/kubeconfig/kubelet.conf"
-    - name: Clean up local temporary PKI directory
-      shell: "rm -rf ./pki || true"
+    - name: Remove local staging PKI directory
+      shell: 'rm -rf {{ default "./pki" .pki_dir }} || true'
       delegate_to: localhost
       run_once: true
