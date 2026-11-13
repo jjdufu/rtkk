@@ -231,11 +231,19 @@ pub enum CertSubcommands {
         /// Output path for the generated `PEM` certificate (`0644`).
         #[arg(long, help = "Output certificate PEM path")]
         out_cert: PathBuf,
-        /// Signing CA private key `PEM` path (requires `--root-cert`).
-        #[arg(long, help = "Issuer CA private key PEM path (for leaf certificates)")]
+        /// Signing CA private key `PEM` path (requires `--root-cert` / `--ca-cert`).
+        #[arg(
+            long,
+            visible_alias = "ca-key",
+            help = "Issuer CA private key PEM path (for leaf certificates)"
+        )]
         root_key: Option<PathBuf>,
-        /// Signing CA certificate `PEM` path (requires `--root-key`).
-        #[arg(long, help = "Issuer CA certificate PEM path (for leaf certificates)")]
+        /// Signing CA certificate `PEM` path (requires `--root-key` / `--ca-key`).
+        #[arg(
+            long,
+            visible_alias = "ca-cert",
+            help = "Issuer CA certificate PEM path (for leaf certificates)"
+        )]
         root_cert: Option<PathBuf>,
         /// Subject Alternative Names (`DNS` names or `IPv4`/`IPv6` addresses).
         #[arg(
@@ -244,7 +252,11 @@ pub enum CertSubcommands {
         )]
         sans: Vec<String>,
         /// Issue a Certificate Authority (`CA:TRUE`) certificate.
-        #[arg(long = "ca", help = "Generate a CA certificate")]
+        #[arg(
+            long = "ca",
+            visible_alias = "is-ca",
+            help = "Generate a CA certificate"
+        )]
         is_ca: bool,
         /// Certificate validity duration (e.g. `867240h`, `99y`, `8760h`, `1y`, `365d`).
         #[arg(
@@ -270,7 +282,11 @@ pub enum CertSubcommands {
         #[arg(long, help = "Private key PEM path to verify keypair match")]
         key: Option<PathBuf>,
         /// Optional path to issuer CA certificate `PEM` file to verify signature chain.
-        #[arg(long, help = "CA certificate PEM path to verify issuer signature")]
+        #[arg(
+            long,
+            visible_alias = "ca-cert",
+            help = "CA certificate PEM path to verify issuer signature"
+        )]
         ca: Option<PathBuf>,
     },
 }

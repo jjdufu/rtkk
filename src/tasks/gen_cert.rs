@@ -174,6 +174,7 @@ fn parse_gen_cert_params(
     let date_hours = resolve_validity_hours(&rendered, host_vars)?;
     let policy_str = rendered
         .get("policy")
+        .or_else(|| rendered.get("state"))
         .and_then(Value::as_str)
         .unwrap_or("always");
     let policy = CertPolicy::from_str_policy(policy_str).map_err(TaskModuleError::Message)?;
