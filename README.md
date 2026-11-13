@@ -405,6 +405,7 @@ vars:
 
   kube_version: "v1.35.6"
   etcd_version: "v3.6.12"
+  containerd_version: "1.7.32"          # 自动适配 1.x (config v2) 与 2.x (config v3)
 
 hosts:
   c23-p61: 10.0.0.61
@@ -429,7 +430,7 @@ roles:
 | `configs/images.yaml` | 定义 Kubernetes 控制面、kube-vip、CoreDNS、pause、NodeLocalDNS、Cilium、OpenEBS LocalPV 的源镜像与目标私库地址映射 |
 | `configs/deploy.yaml` | Play 0–8 全自动部署：环境检测清理 → 关闭 swap / 内核模块 / sysctl / DNS → containerd 与私库 `0600` `hosts.toml` → 外部高可用 etcd 集群与证书 → kube-vip 与控制面初始化/扩容 → Worker 加入 → Cilium / OpenEBS / NodeLocalDNS 部署 → 集群状态备份至 `./rtkk_bak/` |
 | `configs/cleanup.yaml` | 停止相关服务、执行 `kubeadm reset`、清理运行时目录、证书与二进制文件 |
-| `configs/templates/*.gtmpl` | `kubeadm`（`v1beta4`）、`containerd`、`etcd`、`cilium`、`local-volume`、`nodelocaldns` 渲染模板 |
+| `configs/templates/*.gtmpl` | `kubeadm`（`v1beta4`，面向 K8s `>= v1.31`）、`containerd`（按 `containerd_version` 自动切换 `1.x` `version = 2` 与 `2.x` `version = 3`）、`etcd`、`cilium`、`local-volume`、`nodelocaldns` 渲染模板 |
 
 ---
 

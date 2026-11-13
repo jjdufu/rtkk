@@ -430,3 +430,153 @@ fn render_external_dedicated_etcd_topology_points_endpoints_to_dedicated_etcd_ip
     )?;
     Ok(())
 }
+
+fn render_containerd_for_version(
+    base_vars: &Value,
+    version: Option<&str>,
+) -> Result<String, String> {
+    let mut vars = base_vars.clone();
+    if let Some(obj) = vars.as_object_mut() {
+        if let Some(v) = version {
+            obj.insert("containerd_version".to_string(), json!(v));
+        } else {
+            obj.remove("containerd_version");
+        }
+    }
+    render_config_template("templates/containerd-config.toml.gtmpl", &vars)
+}
+
+const EXPECTED_CONTAINERD_V2: &str = "\
+version = 2
+[plugins]
+  [plugins.\"io.containerd.grpc.v1.cri\"]
+    sandbox_image = \"10.0.0.10/rtkk/pause:3.10.1\"
+    [plugins.\"io.containerd.grpc.v1.cri\".cni]
+      bin_dir = \"/opt/cni/bin\"
+      conf_dir = \"/etc/cni/net.d\"
+    [plugins.\"io.containerd.grpc.v1.cri\".containerd]
+      snapshotter = \"overlayfs\"
+      default_runtime_name = \"runc\"
+      [plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes]
+        [plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.runc]
+          runtime_type = \"io.containerd.runc.v2\"
+          [plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.runc.options]
+            SystemdCgroup = true
+    [plugins.\"io.containerd.grpc.v1.cri\".registry]
+      config_path = \"/etc/containerd/certs.d\"
+";
+
+const EXPECTED_CONTAINERD_V3_2_0: &str = "\
+version = 3
+[plugins]
+  [plugins.\"io.containerd.cri.v1.images\"]
+    snapshotter = \"overlayfs\"
+    [plugins.\"io.containerd.cri.v1.images\".pinned_images]
+      sandbox = \"10.0.0.10/rtkk/pause:3.10.1\"
+    [plugins.\"io.containerd.cri.v1.images\".registry]
+      config_path = \"/etc/containerd/certs.d\"
+  [plugins.\"io.containerd.cri.v1.runtime\"]
+    [plugins.\"io.containerd.cri.v1.runtime\".cni]
+      bin_dir = \"/opt/cni/bin\"
+      conf_dir = \"/etc/cni/net.d\"
+    [plugins.\"io.containerd.cri.v1.runtime\".containerd]
+      default_runtime_name = \"runc\"
+      [plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes]
+        [plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes.runc]
+          runtime_type = \"io.containerd.runc.v2\"
+          [plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes.runc.options]
+            SystemdCgroup = true
+  [plugins.\"io.containerd.transfer.v1.local\"]
+    config_path = \"/etc/containerd/certs.d\"
+";
+
+const EXPECTED_CONTAINERD_V3_2_1_PLUS: &str = "\
+version = 3
+[plugins]
+  [plugins.\"io.containerd.cri.v1.images\"]
+    snapshotter = \"overlayfs\"
+    [plugins.\"io.containerd.cri.v1.images\".pinned_images]
+      sandbox = \"10.0.0.10/rtkk/pause:3.10.1\"
+    [plugins.\"io.containerd.cri.v1.images\".registry]
+      config_path = \"/etc/containerd/certs.d\"
+  [plugins.\"io.containerd.cri.v1.runtime\"]
+    [plugins.\"io.containerd.cri.v1.runtime\".cni]
+      bin_dirs = [\"/opt/cni/bin\"]
+      conf_dir = \"/etc/cni/net.d\"
+    [plugins.\"io.containerd.cri.v1.runtime\".containerd]
+      default_runtime_name = \"runc\"
+      [plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes]
+        [plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes.runc]
+          runtime_type = \"io.containerd.runc.v2\"
+          [plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes.runc.options]
+            SystemdCgroup = true
+  [plugins.\"io.containerd.transfer.v1.local\"]
+    config_path = \"/etc/containerd/certs.d\"
+";
+
+#[test]
+fn render_containerd_config_auto_switches_between_v2_and_v3_across_versions() -> Result<(), String>
+{
+    let inv = load_base_inventory()?;
+    let flat = finalize_flat_inventory(&inv)?;
+    let base_vars = host_context_json(&flat, "c23-p61")?;
+
+    for v1 in [None, Some("1.7.32"), Some("v1.7.32"), Some("1.7.32-rc.1")] {
+        let out = render_containerd_for_version(&base_vars, v1)?;
+        ensure(
+            out == EXPECTED_CONTAINERD_V2,
+            &format!("unexpected Containerd 1.x TOML for {v1:?}:\n{out}"),
+        )?;
+    }
+
+    for v2_0 in ["2.0.0", "2.0.5", "v2.0.5", "2.0.0-rc.3"] {
+        let out = render_containerd_for_version(&base_vars, Some(v2_0))?;
+        ensure(
+            out == EXPECTED_CONTAINERD_V3_2_0,
+            &format!("unexpected Containerd 2.0.x TOML for {v2_0}:\n{out}"),
+        )?;
+    }
+
+    for v2_1_plus in ["2.1.0", "2.2.0", "v2.2.0", "2.4.2", "v2.4.2-rc.1"] {
+        let out = render_containerd_for_version(&base_vars, Some(v2_1_plus))?;
+        ensure(
+            out == EXPECTED_CONTAINERD_V3_2_1_PLUS,
+            &format!("unexpected Containerd 2.1+ TOML for {v2_1_plus}:\n{out}"),
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn download_playbook_normalizes_containerd_version_with_or_without_v_prefix() -> Result<(), String>
+{
+    let inv = load_base_inventory()?;
+    let flat = finalize_flat_inventory(&inv)?;
+    let base_vars = host_context_json(&flat, "c23-p61")?;
+
+    for (raw_ver, clean_ver) in [
+        ("1.7.32", "1.7.32"),
+        ("v1.7.32", "1.7.32"),
+        ("2.4.2", "2.4.2"),
+        ("v2.4.2", "2.4.2"),
+        ("V2.4.2", "2.4.2"),
+    ] {
+        let mut vars = base_vars.clone();
+        if let Some(obj) = vars.as_object_mut() {
+            obj.insert("containerd_version".to_string(), json!(raw_ver));
+        }
+        let rendered = render_config_template("download.yaml", &vars)?;
+        let expected_url = format!(
+            "https://github.com/containerd/containerd/releases/download/v{clean_ver}/containerd-{clean_ver}-linux-amd64.tar.gz"
+        );
+        ensure(
+            rendered.contains(&expected_url),
+            &format!("download.yaml for '{raw_ver}' did not contain '{expected_url}':\n{rendered}"),
+        )?;
+        ensure(
+            !rendered.contains("/vv"),
+            &format!("download.yaml for '{raw_ver}' rendered duplicate 'vv' tag prefix"),
+        )?;
+    }
+    Ok(())
+}

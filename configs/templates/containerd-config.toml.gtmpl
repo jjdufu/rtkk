@@ -1,8 +1,40 @@
+{{- $ctdVer := regexReplaceAll "-.*$" (default "1.7.32" .containerd_version) "" -}}
+{{- if semverCompare ">= 2.0.0" $ctdVer -}}
+version = 3
+[plugins]
+  [plugins."io.containerd.cri.v1.images"]
+    snapshotter = "overlayfs"
+    [plugins."io.containerd.cri.v1.images".pinned_images]
+      sandbox = "{{ .registry.url }}/pause:{{ .pause_version }}"
+    [plugins."io.containerd.cri.v1.images".registry]
+      config_path = "/etc/containerd/certs.d"
+  [plugins."io.containerd.cri.v1.runtime"]
+    [plugins."io.containerd.cri.v1.runtime".cni]
+      {{- if semverCompare ">= 2.1.0" $ctdVer }}
+      bin_dirs = ["/opt/cni/bin"]
+      {{- else }}
+      bin_dir = "/opt/cni/bin"
+      {{- end }}
+      conf_dir = "/etc/cni/net.d"
+    [plugins."io.containerd.cri.v1.runtime".containerd]
+      default_runtime_name = "runc"
+      [plugins."io.containerd.cri.v1.runtime".containerd.runtimes]
+        [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runc]
+          runtime_type = "io.containerd.runc.v2"
+          [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runc.options]
+            SystemdCgroup = true
+  [plugins."io.containerd.transfer.v1.local"]
+    config_path = "/etc/containerd/certs.d"
+{{- else -}}
 version = 2
 [plugins]
   [plugins."io.containerd.grpc.v1.cri"]
     sandbox_image = "{{ .registry.url }}/pause:{{ .pause_version }}"
+    [plugins."io.containerd.grpc.v1.cri".cni]
+      bin_dir = "/opt/cni/bin"
+      conf_dir = "/etc/cni/net.d"
     [plugins."io.containerd.grpc.v1.cri".containerd]
+      snapshotter = "overlayfs"
       default_runtime_name = "runc"
       [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
         [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
@@ -11,3 +43,4 @@ version = 2
             SystemdCgroup = true
     [plugins."io.containerd.grpc.v1.cri".registry]
       config_path = "/etc/containerd/certs.d"
+{{- end }}

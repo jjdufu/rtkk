@@ -32,6 +32,7 @@ vars:
   cert_validity: "867240h"
   kube_version: "v1.35.6"
   etcd_version: "v3.6.12"
+  # Containerd version (1.x renders config.toml v2; 2.x renders config.toml v3)
   containerd_version: "1.7.32"
   runc_version: "v1.1.15"
   cni_version: "v1.6.0"

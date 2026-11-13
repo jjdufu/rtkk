@@ -5,42 +5,42 @@
       command: "mkdir -p ./downloads/bin ./downloads/tar ./downloads/images ./logs"
     - name: Download kubeadm binary
       http_get_file:
-        url: 'https://dl.k8s.io/release/{{ .kube_version }}/bin/linux/{{ default "amd64" .download_arch }}/kubeadm'
+        url: '{{- $ver := trimPrefix "v" (trimPrefix "V" .kube_version) -}}https://dl.k8s.io/release/v{{ $ver }}/bin/linux/{{ default "amd64" .download_arch }}/kubeadm'
         dest: "./downloads/bin/kubeadm"
         mode: "0755"
     - name: Download kubelet binary
       http_get_file:
-        url: 'https://dl.k8s.io/release/{{ .kube_version }}/bin/linux/{{ default "amd64" .download_arch }}/kubelet'
+        url: '{{- $ver := trimPrefix "v" (trimPrefix "V" .kube_version) -}}https://dl.k8s.io/release/v{{ $ver }}/bin/linux/{{ default "amd64" .download_arch }}/kubelet'
         dest: "./downloads/bin/kubelet"
         mode: "0755"
     - name: Download kubectl binary
       http_get_file:
-        url: 'https://dl.k8s.io/release/{{ .kube_version }}/bin/linux/{{ default "amd64" .download_arch }}/kubectl'
+        url: '{{- $ver := trimPrefix "v" (trimPrefix "V" .kube_version) -}}https://dl.k8s.io/release/v{{ $ver }}/bin/linux/{{ default "amd64" .download_arch }}/kubectl'
         dest: "./downloads/bin/kubectl"
         mode: "0755"
     - name: Download containerd archive
       http_get_file:
-        url: 'https://github.com/containerd/containerd/releases/download/v{{ .containerd_version }}/containerd-{{ .containerd_version }}-linux-{{ default "amd64" .download_arch }}.tar.gz'
+        url: '{{- $ver := trimPrefix "v" (trimPrefix "V" (default "1.7.32" .containerd_version)) -}}https://github.com/containerd/containerd/releases/download/v{{ $ver }}/containerd-{{ $ver }}-linux-{{ default "amd64" .download_arch }}.tar.gz'
         dest: "./downloads/tar/containerd.tar.gz"
         mode: "0644"
     - name: Download runc binary
       http_get_file:
-        url: 'https://github.com/opencontainers/runc/releases/download/{{ .runc_version }}/runc.{{ default "amd64" .download_arch }}'
+        url: '{{- $ver := trimPrefix "v" (trimPrefix "V" .runc_version) -}}https://github.com/opencontainers/runc/releases/download/v{{ $ver }}/runc.{{ default "amd64" .download_arch }}'
         dest: "./downloads/bin/runc"
         mode: "0755"
     - name: Download etcd archive
       http_get_file:
-        url: 'https://github.com/etcd-io/etcd/releases/download/{{ .etcd_version }}/etcd-{{ .etcd_version }}-linux-{{ default "amd64" .download_arch }}.tar.gz'
+        url: '{{- $ver := trimPrefix "v" (trimPrefix "V" .etcd_version) -}}https://github.com/etcd-io/etcd/releases/download/v{{ $ver }}/etcd-v{{ $ver }}-linux-{{ default "amd64" .download_arch }}.tar.gz'
         dest: "./downloads/tar/etcd.tar.gz"
         mode: "0644"
     - name: Download CNI plugins archive
       http_get_file:
-        url: 'https://github.com/containernetworking/plugins/releases/download/{{ .cni_version }}/cni-plugins-linux-{{ default "amd64" .download_arch }}-{{ .cni_version }}.tgz'
+        url: '{{- $ver := trimPrefix "v" (trimPrefix "V" .cni_version) -}}https://github.com/containernetworking/plugins/releases/download/v{{ $ver }}/cni-plugins-linux-{{ default "amd64" .download_arch }}-v{{ $ver }}.tgz'
         dest: "./downloads/tar/cni-plugins.tgz"
         mode: "0644"
     - name: Download Helm archive
       http_get_file:
-        url: 'https://get.helm.sh/helm-{{ .helm_version }}-linux-{{ default "amd64" .download_arch }}.tar.gz'
+        url: '{{- $ver := trimPrefix "v" (trimPrefix "V" .helm_version) -}}https://get.helm.sh/helm-v{{ $ver }}-linux-{{ default "amd64" .download_arch }}.tar.gz'
         dest: "./downloads/tar/helm.tar.gz"
         mode: "0644"
     - name: Extract Helm binary
