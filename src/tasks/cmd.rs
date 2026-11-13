@@ -1,6 +1,7 @@
 use super::{Task, TaskModuleError, TaskResult, render_value};
 use crate::connector::Connector;
 use serde_json::Value;
+
 pub(crate) async fn execute_cmd_shell(
     task: &Task,
     connector: &Connector,
@@ -21,6 +22,7 @@ pub(crate) async fn execute_cmd_shell(
         s.to_string()
     } else if let Some(m) = rendered.as_object() {
         m.get("_raw_params")
+            .or_else(|| m.get("cmd"))
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string()
@@ -35,9 +37,8 @@ pub(crate) async fn execute_cmd_shell(
             .await
             .map_err(TaskModuleError::from_connector)?
     } else {
-        let argv = shell_words::split(&cmd_str).map_err(|e| {
-            TaskModuleError::Message(format!("failed to parse command argv: {e}"))
-        })?;
+        let argv = shell_words::split(&cmd_str)
+            .map_err(|e| TaskModuleError::Message(format!("failed to parse command argv: {e}")))?;
         if argv.is_empty() {
             return Err(TaskModuleError::Message("empty command".to_string()));
         }
@@ -58,7 +59,8 @@ pub(crate) async fn execute_cmd_shell(
             obj.insert("stderr".to_string(), Value::String(err.clone()));
             obj.insert("rc".to_string(), Value::Number(res.exit_code.into()));
         }
-        changed = crate::playbook::eval_condition(cw, &custom_context);
+        changed = crate::playbook::eval_condition(cw, &custom_context)
+            .map_err(TaskModuleError::Message)?;
     }
     Ok(Some(TaskResult {
         stdout: out,

@@ -1,12 +1,15 @@
+//! `rtkk` library crate for automated Kubernetes and Etcd cluster deployment,
+//! OCI image synchronization, and X.509 certificate lifecycle management on Debian 13.
+
+pub mod cert;
 pub mod cli;
-pub(crate) mod inventory;
-pub(crate) mod logging;
-pub(crate) mod playbook;
-pub(crate) mod registry;
-pub(crate) mod tasks;
-pub(crate) mod cert;
-pub(crate) mod connector;
-pub(crate) mod error;
-pub(crate) mod prep;
-pub(crate) mod template;
-pub(crate) mod utils;
+pub mod connector;
+pub mod error;
+pub mod inventory;
+pub mod logging;
+pub mod playbook;
+pub mod prep;
+pub mod registry;
+pub mod tasks;
+pub mod template;
+pub mod utils;

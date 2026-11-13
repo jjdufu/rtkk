@@ -1,19 +1,22 @@
 [workspace]
 resolver = "2"
 members = ["."]
+
 [workspace.package]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.100.0"
+
 [workspace.lints.rust]
 warnings = "deny"
 unsafe_code = "forbid"
 unused_imports = "deny"
 unused_variables = "deny"
 dead_code = "deny"
-unused_mut = "deny"
 unused_must_use = "deny"
-missing_docs = "allow"
+unused_mut = "deny"
+missing_docs = "deny"
 elided_lifetimes_in_paths = "deny"
+
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
@@ -28,8 +31,9 @@ unreachable = "deny"
 as_conversions = "deny"
 indexing_slicing = "deny"
 clone_on_copy = "deny"
-missing_errors_doc = "allow"
-missing_panics_doc = "allow"
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
+
 [package]
 name = "rtkk"
 version = "0.0.0" # x-release-please-version
