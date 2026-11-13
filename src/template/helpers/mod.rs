@@ -1,10 +1,14 @@
+//! Built-in helper functions registered on [`gtmpl::Template`] instances.
+
 mod collections;
 mod math;
 mod misc;
 mod network;
 mod serde;
 mod string;
-pub(crate) fn register_functions(t: &mut gtmpl::Template) {
+
+/// Registers all built-in helper functions onto the given `Go` template instance.
+pub fn register_functions(t: &mut gtmpl::Template) {
     t.add_func("toJson", serde::to_json_fn);
     t.add_func("toYaml", serde::to_yaml_fn);
     t.add_func("fromYaml", serde::from_yaml_fn);
@@ -18,6 +22,7 @@ pub(crate) fn register_functions(t: &mut gtmpl::Template) {
     t.add_func("regexMatch", string::regex_match_fn);
     t.add_func("regexReplaceAll", string::regex_replace_all_fn);
     t.add_func("randInt", math::rand_int_fn);
+    t.add_func("add", math::add_fn);
     t.add_func("sub", math::sub_fn);
     t.add_func("int", math::int_fn);
     t.add_func("len", math::len_fn);
@@ -31,6 +36,7 @@ pub(crate) fn register_functions(t: &mut gtmpl::Template) {
     t.add_func("not", collections::not_fn);
     t.add_func("indent", string::indent_fn);
     t.add_func("splitList", string::split_list_fn);
+    t.add_func("b64enc", string::b64enc_fn);
     t.add_func("ipInCIDR", network::ip_in_cidr_fn);
     t.add_func("generateIPsFromCIDR", network::generate_ips_from_cidr_fn);
     t.add_func("ipFamily", network::ip_family_fn);

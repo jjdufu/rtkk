@@ -1,4 +1,44 @@
+//! Miscellaneous template helpers (`SemVer` comparison, filesystem checks, and template inclusion).
+
 use crate::template::{get_templates_registry, render_template_string};
+
+fn strip_v_prefix(s: &str) -> &str {
+    s.strip_prefix('v')
+        .or_else(|| s.strip_prefix('V'))
+        .unwrap_or(s)
+}
+
+fn normalize_semver_clause(clause: &str) -> String {
+    const OPS: &[&str] = &[">=", "<=", "!=", ">", "<", "=", "~", "^"];
+    let trimmed = clause.trim();
+    for op in OPS {
+        if let Some(rest) = trimmed.strip_prefix(op) {
+            let ver = strip_v_prefix(rest.trim());
+            return format!("{op}{ver}");
+        }
+    }
+    let ver = strip_v_prefix(trimmed);
+    if ver.starts_with(|c: char| c.is_ascii_digit())
+        && !ver.contains('*')
+        && !ver.contains('x')
+        && !ver.contains('X')
+    {
+        format!("={ver}")
+    } else {
+        ver.to_string()
+    }
+}
+
+fn normalize_semver_constraint(raw: &str) -> String {
+    let parts: Vec<String> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(normalize_semver_clause)
+        .collect();
+    parts.join(", ")
+}
+
 pub(super) fn semver_compare_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::FuncError> {
     let Some(constraint_val) = args.first() else {
         return Err(gtmpl::FuncError::AtLeastXArgs(
@@ -22,25 +62,17 @@ pub(super) fn semver_compare_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, g
             "semverCompare expects a string version".to_string(),
         ));
     };
-    let clean_ver = ver_str.trim().strip_prefix('v').unwrap_or(ver_str.trim());
+    let clean_ver = strip_v_prefix(ver_str.trim());
     let parsed_version = semver::Version::parse(clean_ver).map_err(|e| {
         gtmpl::FuncError::Generic(format!("invalid semver version '{ver_str}': {e}"))
     })?;
-    let clean_constraint = constraint_str
-        .trim()
-        .strip_prefix('v')
-        .unwrap_or(constraint_str.trim());
-    let constraint_with_op = if clean_constraint.starts_with(|c: char| c.is_ascii_digit()) {
-        format!("={clean_constraint}")
-    } else {
-        clean_constraint.to_string()
-    };
-    let requirement = semver::VersionReq::parse(&constraint_with_op).map_err(|e| {
+    let normalized_constraint = normalize_semver_constraint(constraint_str);
+    let requirement = semver::VersionReq::parse(&normalized_constraint).map_err(|e| {
         gtmpl::FuncError::Generic(format!("invalid semver constraint '{constraint_str}': {e}"))
     })?;
-    let matches = requirement.matches(&parsed_version);
-    Ok(gtmpl::Value::Bool(matches))
+    Ok(gtmpl::Value::Bool(requirement.matches(&parsed_version)))
 }
+
 pub(super) fn file_exists_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::FuncError> {
     let Some(first) = args.first() else {
         return Err(gtmpl::FuncError::AtLeastXArgs("fileExists".to_string(), 1));
@@ -53,6 +85,7 @@ pub(super) fn file_exists_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmp
     let path = std::path::Path::new(path_str);
     Ok(gtmpl::Value::Bool(path.exists() && path.is_file()))
 }
+
 pub(super) fn tpl_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::FuncError> {
     let Some(tpl_val) = args.first() else {
         return Err(gtmpl::FuncError::AtLeastXArgs("tpl".to_string(), 1));
@@ -67,6 +100,7 @@ pub(super) fn tpl_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::FuncE
         .map_err(|e| gtmpl::FuncError::Generic(format!("tpl render failed: {e}")))?;
     Ok(gtmpl::Value::String(res))
 }
+
 pub(super) fn include_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::FuncError> {
     let Some(tpl_name_val) = args.first() else {
         return Err(gtmpl::FuncError::AtLeastXArgs("include".to_string(), 2));
@@ -79,17 +113,18 @@ pub(super) fn include_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::F
     let Some(ctx) = args.get(1) else {
         return Err(gtmpl::FuncError::AtLeastXArgs("include".to_string(), 2));
     };
-    let tpl_content = get_templates_registry()
-        .read()
-        .ok()
-        .and_then(|reg| reg.get(tpl_name).cloned());
-    if let Some(content) = tpl_content {
-        let res = render_template_string(&content, ctx)
-            .map_err(|e| gtmpl::FuncError::Generic(format!("include '{tpl_name}' failed: {e}")))?;
-        Ok(gtmpl::Value::String(res))
-    } else {
-        Err(gtmpl::FuncError::Generic(format!(
+    let tpl_content = {
+        let guard = get_templates_registry()
+            .read()
+            .map_err(|e| gtmpl::FuncError::Generic(format!("template registry poisoned: {e}")))?;
+        guard.get(tpl_name).cloned()
+    };
+    let Some(content) = tpl_content else {
+        return Err(gtmpl::FuncError::Generic(format!(
             "template '{tpl_name}' not found in registry"
-        )))
-    }
+        )));
+    };
+    let res = render_template_string(&content, ctx)
+        .map_err(|e| gtmpl::FuncError::Generic(format!("include '{tpl_name}' failed: {e}")))?;
+    Ok(gtmpl::Value::String(res))
 }

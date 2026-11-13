@@ -1,25 +1,40 @@
+//! Image synchronization configuration and templated `YAML` image list loader.
+
 use super::RegistryConfig;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
-#[derive(Debug, Clone, Deserialize)]
-pub(crate) struct ImageSyncConfig {
+
+/// Configuration for pulling and synchronizing container images.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageSyncConfig {
+    /// Local directory where image `.tar` archives are stored.
     #[serde(default = "default_output_dir")]
     pub output_dir: String,
+    /// Target `OCI` platform in `os/arch` or `os/arch/variant` format.
     #[serde(default = "default_platform")]
     pub platform: String,
+    /// Whether to skip `TLS` certificate verification when pulling from source registries.
     #[serde(default)]
     pub insecure: bool,
+    /// Number of retry attempts for manifest and blob `HTTP` requests.
     #[serde(default = "default_retries")]
     pub retries: u32,
-    #[serde(default = "default_layer_concurrency")]
+    /// Maximum number of concurrent layer blob downloads per image.
+    #[serde(
+        default = "default_layer_concurrency",
+        alias = "max_concurrent_layer_downloads"
+    )]
     pub layer_concurrency: usize,
+    /// Per-request `HTTP` timeout in seconds.
     #[serde(default = "default_http_timeout_secs")]
     pub http_timeout_secs: u64,
+    /// Optional per-host credentials for authenticated source registries.
     #[serde(default)]
     pub source_auths: HashMap<String, SourceAuth>,
 }
+
 impl Default for ImageSyncConfig {
     fn default() -> Self {
         Self {
@@ -33,42 +48,59 @@ impl Default for ImageSyncConfig {
         }
     }
 }
+
 fn default_output_dir() -> String {
     "./downloads/images".to_string()
 }
+
 fn default_platform() -> String {
     "linux/amd64".to_string()
 }
-fn default_retries() -> u32 {
+
+const fn default_retries() -> u32 {
     3
 }
-fn default_layer_concurrency() -> usize {
+
+const fn default_layer_concurrency() -> usize {
     4
 }
-fn default_http_timeout_secs() -> u64 {
+
+const fn default_http_timeout_secs() -> u64 {
     600
 }
-#[derive(Debug, Clone, Deserialize, Default)]
-pub(crate) struct SourceAuth {
+
+/// Basic authentication credentials for an upstream source registry host.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SourceAuth {
+    /// Username for the source registry.
     pub username: Option<String>,
+    /// Password or token for the source registry.
     pub password: Option<String>,
 }
-#[derive(Debug, Clone, Deserialize)]
-pub(crate) struct ImageSpec {
+
+/// Specification of a single container image to pull and re-tag for the target registry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageSpec {
+    /// Logical archive stem (written as `<output_dir>/<name>.tar`).
     pub name: String,
+    /// Upstream source image reference (tag and/or `@sha256:...` digest).
     pub source: String,
+    /// Target private registry image reference (`<registry>/<repo>:<tag>`).
     pub target: String,
 }
+
 #[derive(Debug, Deserialize)]
 struct ImagesFile {
     images: Vec<ImageSpecRaw>,
 }
+
 #[derive(Debug, Deserialize)]
 struct ImageSpecRaw {
     name: String,
     source: String,
     target: String,
 }
+
 pub(crate) fn extract_vars_and_sync(doc: &Value) -> Result<(Value, ImageSyncConfig), String> {
     let vars = doc
         .get("vars")
@@ -85,6 +117,7 @@ pub(crate) fn extract_vars_and_sync(doc: &Value) -> Result<(Value, ImageSyncConf
         .unwrap_or_default();
     Ok((vars, sync))
 }
+
 pub(crate) fn registry_from_doc(doc: &Value) -> Result<RegistryConfig, String> {
     let registry_val = doc
         .get("vars")
@@ -101,6 +134,7 @@ pub(crate) fn registry_from_doc(doc: &Value) -> Result<RegistryConfig, String> {
     serde_json::from_value(registry_val)
         .map_err(|e| format!("failed to parse registry config: {e}"))
 }
+
 pub(crate) fn load_image_specs(images_file: &str, vars: &Value) -> Result<Vec<ImageSpec>, String> {
     let path = Path::new(images_file);
     if !path.is_file() {
@@ -137,6 +171,7 @@ pub(crate) fn load_image_specs(images_file: &str, vars: &Value) -> Result<Vec<Im
     }
     Ok(out)
 }
+
 pub(crate) fn parse_platform(platform: &str) -> Result<(String, String, Option<String>), String> {
     let parts: Vec<&str> = platform.split('/').collect();
     match parts.as_slice() {

@@ -1,3 +1,5 @@
+//! `IP` and `CIDR` network template helper functions.
+
 pub(super) fn generate_ips_from_cidr_fn(
     args: &[gtmpl::Value],
 ) -> Result<gtmpl::Value, gtmpl::FuncError> {
@@ -48,6 +50,7 @@ pub(super) fn generate_ips_from_cidr_fn(
     }
     Ok(gtmpl::Value::Array(ips))
 }
+
 pub(super) fn ip_in_cidr_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::FuncError> {
     if args.len() < 2 {
         return Err(gtmpl::FuncError::AtLeastXArgs("ipInCIDR".to_string(), 2));
@@ -72,6 +75,7 @@ pub(super) fn ip_in_cidr_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl
         .map_err(|e| gtmpl::FuncError::Generic(format!("invalid CIDR block '{cidr_str}': {e}")))?;
     Ok(gtmpl::Value::Bool(net.contains(&ip)))
 }
+
 pub(super) fn ip_family_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::FuncError> {
     let Some(first) = args.first() else {
         return Err(gtmpl::FuncError::AtLeastXArgs("ipFamily".to_string(), 1));

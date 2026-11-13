@@ -1,18 +1,82 @@
-pub(super) fn has_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::FuncError> {
-    if args.len() < 2 {
-        return Err(gtmpl::FuncError::AtLeastXArgs("has".to_string(), 2));
+//! Collection, comparison, and emptiness template helper functions.
+
+fn is_empty_val(val: &gtmpl::Value) -> bool {
+    match val {
+        gtmpl::Value::Nil | gtmpl::Value::NoValue => true,
+        gtmpl::Value::Bool(b) => !*b,
+        gtmpl::Value::String(s) => s.trim().is_empty(),
+        gtmpl::Value::Array(a) => a.is_empty(),
+        gtmpl::Value::Map(o) | gtmpl::Value::Object(o) => o.is_empty(),
+        gtmpl::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                i == 0
+            } else if let Some(u) = n.as_u64() {
+                u == 0
+            } else if let Some(f) = n.as_f64() {
+                f.abs() < f64::EPSILON
+            } else {
+                false
+            }
+        }
+        gtmpl::Value::Function(_) => false,
     }
+}
+
+fn numbers_equal(na: &gtmpl_value::Number, nb: &gtmpl_value::Number) -> bool {
+    if let (Some(ia), Some(ib)) = (na.as_i64(), nb.as_i64()) {
+        ia == ib
+    } else if let (Some(ua), Some(ub)) = (na.as_u64(), nb.as_u64()) {
+        ua == ub
+    } else if let (Some(ia), Some(ub)) = (na.as_i64(), nb.as_u64()) {
+        u64::try_from(ia).is_ok_and(|ua| ua == ub)
+    } else if let (Some(ua), Some(ib)) = (na.as_u64(), nb.as_i64()) {
+        u64::try_from(ib).is_ok_and(|ub| ua == ub)
+    } else if let (Some(fa), Some(fb)) = (na.as_f64(), nb.as_f64()) {
+        (fa - fb).abs() < f64::EPSILON
+    } else {
+        false
+    }
+}
+
+fn values_equal(a: &gtmpl::Value, b: &gtmpl::Value) -> bool {
+    match (a, b) {
+        (gtmpl::Value::Nil | gtmpl::Value::NoValue, gtmpl::Value::Nil | gtmpl::Value::NoValue) => {
+            true
+        }
+        (gtmpl::Value::Nil | gtmpl::Value::NoValue, _)
+        | (_, gtmpl::Value::Nil | gtmpl::Value::NoValue) => false,
+        (gtmpl::Value::Number(na), gtmpl::Value::Number(nb)) => numbers_equal(na, nb),
+        (gtmpl::Value::Array(aa), gtmpl::Value::Array(ab)) => {
+            aa.len() == ab.len() && aa.iter().zip(ab.iter()).all(|(x, y)| values_equal(x, y))
+        }
+        (
+            gtmpl::Value::Map(ma) | gtmpl::Value::Object(ma),
+            gtmpl::Value::Map(mb) | gtmpl::Value::Object(mb),
+        ) => {
+            ma.len() == mb.len()
+                && ma
+                    .iter()
+                    .all(|(k, va)| mb.get(k).is_some_and(|vb| values_equal(va, vb)))
+        }
+        (_, _) => a == b,
+    }
+}
+
+pub(super) fn has_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::FuncError> {
     let Some(elem) = args.first() else {
-        return Ok(gtmpl::Value::Bool(false));
+        return Err(gtmpl::FuncError::AtLeastXArgs("has".to_string(), 2));
     };
     let Some(second) = args.get(1) else {
-        return Ok(gtmpl::Value::Bool(false));
+        return Err(gtmpl::FuncError::AtLeastXArgs("has".to_string(), 2));
     };
     let gtmpl::Value::Array(arr) = second else {
         return Ok(gtmpl::Value::Bool(false));
     };
-    Ok(gtmpl::Value::Bool(arr.contains(elem)))
+    Ok(gtmpl::Value::Bool(
+        arr.iter().any(|item| values_equal(item, elem)),
+    ))
 }
+
 pub(super) fn append_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::FuncError> {
     let Some(arr_val) = args.first() else {
         return Err(gtmpl::FuncError::AtLeastXArgs("append".to_string(), 2));
@@ -29,12 +93,10 @@ pub(super) fn append_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::Fu
     new_arr.push(item.clone());
     Ok(gtmpl::Value::Array(new_arr))
 }
+
 pub(super) fn slice_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::FuncError> {
-    if args.is_empty() {
-        return Err(gtmpl::FuncError::AtLeastXArgs("slice".to_string(), 1));
-    }
     let Some(first) = args.first() else {
-        return Ok(gtmpl::Value::Array(Vec::new()));
+        return Err(gtmpl::FuncError::AtLeastXArgs("slice".to_string(), 1));
     };
     let gtmpl::Value::Array(arr) = first else {
         return Ok(first.clone());
@@ -64,57 +126,87 @@ pub(super) fn slice_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::Fun
     let slice = arr.get(start_usize..end_usize).unwrap_or(&[]).to_vec();
     Ok(gtmpl::Value::Array(slice))
 }
+
 pub(super) fn first_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::FuncError> {
-    if args.is_empty() {
-        return Err(gtmpl::FuncError::AtLeastXArgs("first".to_string(), 1));
-    }
     let Some(first) = args.first() else {
-        return Ok(gtmpl::Value::Nil);
+        return Err(gtmpl::FuncError::AtLeastXArgs("first".to_string(), 1));
     };
     match first {
         gtmpl::Value::Array(a) => Ok(a.first().cloned().unwrap_or(gtmpl::Value::Nil)),
         _ => Ok(first.clone()),
     }
 }
+
+fn parse_array_index(key: &gtmpl::Value) -> Result<usize, gtmpl::FuncError> {
+    let gtmpl::Value::Number(n) = key else {
+        return Err(gtmpl::FuncError::Generic(
+            "index on array requires an integer index".to_string(),
+        ));
+    };
+    if let Some(i) = n.as_i64() {
+        if i < 0 {
+            return Err(gtmpl::FuncError::Generic(format!(
+                "index: negative array index {i}"
+            )));
+        }
+        usize::try_from(i)
+            .map_err(|_| gtmpl::FuncError::Generic(format!("index: invalid array index {i}")))
+    } else if let Some(u) = n.as_u64() {
+        usize::try_from(u)
+            .map_err(|_| gtmpl::FuncError::Generic(format!("index: array index overflow {u}")))
+    } else {
+        Err(gtmpl::FuncError::Generic(
+            "index on array requires an integer index".to_string(),
+        ))
+    }
+}
+
 pub(super) fn index_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::FuncError> {
+    if args.len() < 2 {
+        return Err(gtmpl::FuncError::AtLeastXArgs("index".to_string(), 2));
+    }
     let Some(first) = args.first() else {
         return Err(gtmpl::FuncError::AtLeastXArgs("index".to_string(), 2));
     };
-    let mut target = first.clone();
     let Some(keys) = args.get(1..) else {
-        return Ok(target);
+        return Err(gtmpl::FuncError::AtLeastXArgs("index".to_string(), 2));
     };
+    let mut target = first.clone();
     for key in keys {
-        match target {
+        let next = match &target {
             gtmpl::Value::Map(m) | gtmpl::Value::Object(m) => {
                 let gtmpl::Value::String(k) = key else {
-                    return Ok(gtmpl::Value::Nil);
+                    return Err(gtmpl::FuncError::Generic(
+                        "index on map requires a string key".to_string(),
+                    ));
                 };
-                if let Some(v) = m.get(k) {
-                    target = v.clone();
-                } else {
-                    return Ok(gtmpl::Value::Nil);
+                match m.get(k) {
+                    Some(v) => v.clone(),
+                    None => return Ok(gtmpl::Value::Nil),
                 }
             }
             gtmpl::Value::Array(a) => {
-                let gtmpl::Value::Number(n) = key else {
-                    return Ok(gtmpl::Value::Nil);
+                let idx = parse_array_index(key)?;
+                let Some(v) = a.get(idx) else {
+                    return Err(gtmpl::FuncError::Generic(format!(
+                        "index: array index {idx} out of bounds (len {})",
+                        a.len()
+                    )));
                 };
-                let Some(i) = n.as_i64() else {
-                    return Ok(gtmpl::Value::Nil);
-                };
-                let idx: usize = i.try_into().unwrap_or(0);
-                if let Some(v) = a.get(idx) {
-                    target = v.clone();
-                } else {
-                    return Ok(gtmpl::Value::Nil);
-                }
+                v.clone()
             }
-            _ => return Ok(gtmpl::Value::Nil),
-        }
+            gtmpl::Value::Nil | gtmpl::Value::NoValue => return Ok(gtmpl::Value::Nil),
+            _ => {
+                return Err(gtmpl::FuncError::Generic(
+                    "index target is neither map nor array".to_string(),
+                ));
+            }
+        };
+        target = next;
     }
     Ok(target)
 }
+
 pub(super) fn subtract_list_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::FuncError> {
     let Some(first_arg) = args.first() else {
         return Err(gtmpl::FuncError::AtLeastXArgs(
@@ -140,12 +232,13 @@ pub(super) fn subtract_list_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gt
     };
     let mut result = Vec::new();
     for item_a in list_a {
-        if !list_b.contains(item_a) {
+        if !list_b.iter().any(|item_b| values_equal(item_a, item_b)) {
             result.push(item_a.clone());
         }
     }
     Ok(gtmpl::Value::Array(result))
 }
+
 pub(super) fn get_string_slice_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::FuncError> {
     let Some(map_val) = args.first() else {
         return Err(gtmpl::FuncError::AtLeastXArgs(
@@ -169,33 +262,34 @@ pub(super) fn get_string_slice_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value,
             "getStringSlice expects a string key second argument".to_string(),
         ));
     };
-    if let Some(val) = map.get(key) {
-        match val {
-            gtmpl::Value::Array(arr) => {
-                let mut result = Vec::new();
-                for v in arr {
-                    if let gtmpl::Value::String(s) = v {
-                        result.push(gtmpl::Value::String(s.clone()));
-                    }
+    let Some(val) = map.get(key) else {
+        return Ok(gtmpl::Value::Array(Vec::new()));
+    };
+    match val {
+        gtmpl::Value::Array(arr) => {
+            let mut result = Vec::new();
+            for v in arr {
+                if let gtmpl::Value::String(s) = v {
+                    result.push(gtmpl::Value::String(s.clone()));
                 }
-                Ok(gtmpl::Value::Array(result))
             }
-            gtmpl::Value::String(s) => {
-                let trimmed = s.trim();
-                if trimmed.starts_with('[') && trimmed.ends_with(']') {
-                    if let Ok(arr) = serde_json::from_str::<Vec<String>>(trimmed) {
-                        let result = arr.into_iter().map(gtmpl::Value::String).collect();
-                        return Ok(gtmpl::Value::Array(result));
-                    }
-                }
-                Ok(gtmpl::Value::Array(vec![gtmpl::Value::String(s.clone())]))
-            }
-            _ => Ok(gtmpl::Value::Array(Vec::new())),
+            Ok(gtmpl::Value::Array(result))
         }
-    } else {
-        Ok(gtmpl::Value::Array(Vec::new()))
+        gtmpl::Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.starts_with('[')
+                && trimmed.ends_with(']')
+                && let Ok(arr) = serde_json::from_str::<Vec<String>>(trimmed)
+            {
+                let result = arr.into_iter().map(gtmpl::Value::String).collect();
+                return Ok(gtmpl::Value::Array(result));
+            }
+            Ok(gtmpl::Value::Array(vec![gtmpl::Value::String(s.clone())]))
+        }
+        _ => Ok(gtmpl::Value::Array(Vec::new())),
     }
 }
+
 pub(super) fn map_to_named_string_args_fn(
     args: &[gtmpl::Value],
 ) -> Result<gtmpl::Value, gtmpl::FuncError> {
@@ -221,6 +315,8 @@ pub(super) fn map_to_named_string_args_fn(
             gtmpl::Value::Number(n) => {
                 if let Some(i) = n.as_i64() {
                     i.to_string()
+                } else if let Some(u) = n.as_u64() {
+                    u.to_string()
                 } else if let Some(f) = n.as_f64() {
                     f.to_string()
                 } else {
@@ -236,6 +332,7 @@ pub(super) fn map_to_named_string_args_fn(
     }
     Ok(gtmpl::Value::Array(result))
 }
+
 pub(super) fn ternary_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::FuncError> {
     let Some(val_t) = args.first() else {
         return Err(gtmpl::FuncError::AtLeastXArgs("ternary".to_string(), 3));
@@ -246,17 +343,13 @@ pub(super) fn ternary_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::F
     let Some(cond_val) = args.get(2) else {
         return Err(gtmpl::FuncError::AtLeastXArgs("ternary".to_string(), 3));
     };
-    let cond = match cond_val {
-        gtmpl::Value::Bool(b) => *b,
-        gtmpl::Value::Nil => false,
-        _ => true,
-    };
-    if cond {
-        Ok(val_t.clone())
-    } else {
+    if is_empty_val(cond_val) {
         Ok(val_f.clone())
+    } else {
+        Ok(val_t.clone())
     }
 }
+
 pub(super) fn default_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::FuncError> {
     let Some(default_val) = args.first() else {
         return Err(gtmpl::FuncError::AtLeastXArgs("default".to_string(), 2));
@@ -264,71 +357,55 @@ pub(super) fn default_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::F
     let Some(input_val) = args.get(1) else {
         return Err(gtmpl::FuncError::AtLeastXArgs("default".to_string(), 2));
     };
-    match input_val {
-        gtmpl::Value::Nil => Ok(default_val.clone()),
-        gtmpl::Value::String(s) if s.trim().is_empty() => Ok(default_val.clone()),
-        gtmpl::Value::Array(a) if a.is_empty() => Ok(default_val.clone()),
-        gtmpl::Value::Map(o) | gtmpl::Value::Object(o) if o.is_empty() => Ok(default_val.clone()),
-        gtmpl::Value::Bool(b) if !*b => Ok(default_val.clone()),
-        _ => Ok(input_val.clone()),
+    if is_empty_val(input_val) {
+        Ok(default_val.clone())
+    } else {
+        Ok(input_val.clone())
     }
 }
+
 pub(super) fn eq_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::FuncError> {
     if args.len() < 2 {
         return Err(gtmpl::FuncError::AtLeastXArgs("eq".to_string(), 2));
     }
     let Some(first) = args.first() else {
-        return Ok(gtmpl::Value::Bool(false));
+        return Err(gtmpl::FuncError::AtLeastXArgs("eq".to_string(), 2));
     };
-    let Some(second) = args.get(1) else {
-        return Ok(gtmpl::Value::Bool(false));
+    let Some(others) = args.get(1..) else {
+        return Err(gtmpl::FuncError::AtLeastXArgs("eq".to_string(), 2));
     };
-    Ok(gtmpl::Value::Bool(first == second))
+    Ok(gtmpl::Value::Bool(
+        others.iter().any(|other| values_equal(first, other)),
+    ))
 }
+
 pub(super) fn ne_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::FuncError> {
     if args.len() < 2 {
         return Err(gtmpl::FuncError::AtLeastXArgs("ne".to_string(), 2));
     }
     let Some(first) = args.first() else {
-        return Ok(gtmpl::Value::Bool(true));
+        return Err(gtmpl::FuncError::AtLeastXArgs("ne".to_string(), 2));
     };
     let Some(second) = args.get(1) else {
-        return Ok(gtmpl::Value::Bool(true));
+        return Err(gtmpl::FuncError::AtLeastXArgs("ne".to_string(), 2));
     };
-    Ok(gtmpl::Value::Bool(first != second))
+    Ok(gtmpl::Value::Bool(!values_equal(first, second)))
 }
+
 pub(super) fn empty_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::FuncError> {
-    if args.is_empty() {
+    let Some(first) = args.first() else {
         return Err(gtmpl::FuncError::AtLeastXArgs("empty".to_string(), 1));
-    }
-    let Some(first) = args.first() else {
-        return Ok(gtmpl::Value::Bool(true));
     };
-    let is_empty = match first {
-        gtmpl::Value::Nil => true,
-        gtmpl::Value::Bool(b) => !*b,
-        gtmpl::Value::String(s) => s.trim().is_empty(),
-        gtmpl::Value::Array(a) => a.is_empty(),
-        gtmpl::Value::Map(o) | gtmpl::Value::Object(o) => o.is_empty(),
-        gtmpl::Value::Number(n) => n.as_i64().unwrap_or(0) == 0,
-        _ => false,
-    };
-    Ok(gtmpl::Value::Bool(is_empty))
+    Ok(gtmpl::Value::Bool(is_empty_val(first)))
 }
+
 pub(super) fn not_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::FuncError> {
-    if args.is_empty() {
-        return Err(gtmpl::FuncError::AtLeastXArgs("not".to_string(), 1));
-    }
     let Some(first) = args.first() else {
-        return Ok(gtmpl::Value::Bool(true));
+        return Err(gtmpl::FuncError::AtLeastXArgs("not".to_string(), 1));
     };
-    let cond = match first {
-        gtmpl::Value::Bool(b) => *b,
-        gtmpl::Value::Nil => false,
-        _ => true,
-    };
-    Ok(gtmpl::Value::Bool(!cond))
+    Ok(gtmpl::Value::Bool(is_empty_val(first)))
 }
+
 pub(super) fn to_lower_byte_unit_fn(
     args: &[gtmpl::Value],
 ) -> Result<gtmpl::Value, gtmpl::FuncError> {
