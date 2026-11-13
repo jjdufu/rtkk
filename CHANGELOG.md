@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.2](https://github.com/jjdufu/rtkk/compare/v0.0.1...v0.0.2) (2026-11-13)
+
+
+### Features
+
+* **configs:** auto-switch containerd config.toml between v2 (1.x) and v3 (2.x) ([e384026](https://github.com/jjdufu/rtkk/commit/e384026b24a5ee125fd8481e73674a6c6d35f1ea))
+
 ## [0.0.1](https://github.com/jjdufu/rtkk/compare/v0.0.0...v0.0.1) (2026-11-13)
 
 
