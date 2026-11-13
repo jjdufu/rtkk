@@ -1,17 +1,21 @@
+//! Deterministic directed acyclic graph (`DAG`) construction and role membership resolution.
+
 use super::model::{DependencyGraph, GroupConfig};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
 pub(crate) fn build_dependency_graph(
-    all_groups: &HashMap<String, GroupConfig>,
+    all_groups: &BTreeMap<String, GroupConfig>,
 ) -> Result<DependencyGraph, String> {
-    let mut adj: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut in_degree: HashMap<String, usize> = HashMap::new();
+    let mut adj: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut in_degree: BTreeMap<String, usize> = BTreeMap::new();
     for name in all_groups.keys() {
-        adj.insert(name.clone(), HashSet::new());
+        adj.insert(name.clone(), BTreeSet::new());
         in_degree.insert(name.clone(), 0);
     }
+
     for (parent, cfg) in all_groups {
-        let mut children = HashSet::new();
+        let mut children = BTreeSet::new();
         if let Some(ref child_map) = cfg.children {
             for k in child_map.keys() {
                 children.insert(k.clone());
@@ -28,47 +32,66 @@ pub(crate) fn build_dependency_graph(
                     "Inventory configuration error: Parent group '{parent}' references undefined child group '{child}'"
                 ));
             }
-            if adj.entry(child.clone()).or_default().insert(parent.clone()) {
-                *in_degree.entry(parent.clone()).or_default() += 1;
+            if adj.entry(child).or_default().insert(parent.clone()) {
+                let deg = in_degree.entry(parent.clone()).or_default();
+                *deg = deg.saturating_add(1);
             }
         }
     }
-    let mut queue = VecDeque::new();
-    for (node, &degree) in &in_degree {
-        if degree == 0 {
-            queue.push_back(node.clone());
+
+    if all_groups.contains_key("all") {
+        for name in all_groups.keys() {
+            if name != "all"
+                && adj
+                    .entry(name.clone())
+                    .or_default()
+                    .insert("all".to_string())
+            {
+                let deg = in_degree.entry("all".to_string()).or_default();
+                *deg = deg.saturating_add(1);
+            }
         }
     }
-    let mut topo_order = Vec::new();
-    while let Some(u) = queue.pop_front() {
-        topo_order.push(u.clone());
+
+    let mut ready = BTreeSet::new();
+    for (node, &degree) in &in_degree {
+        if degree == 0 {
+            ready.insert(node.clone());
+        }
+    }
+
+    let mut topo_order = Vec::with_capacity(all_groups.len());
+    while let Some(u) = ready.pop_last() {
         if let Some(neighbors) = adj.get(&u) {
             for v in neighbors {
                 if let Some(deg) = in_degree.get_mut(v) {
-                    *deg -= 1;
+                    *deg = deg.saturating_sub(1);
                     if *deg == 0 {
-                        queue.push_back(v.clone());
+                        ready.insert(v.clone());
                     }
                 }
             }
         }
+        topo_order.push(u);
     }
+
     if topo_order.len() != all_groups.len() {
         return Err("Cyclic dependency detected in inventory groups".to_string());
     }
     Ok((topo_order, adj))
 }
+
 pub(crate) fn resolve_role_hosts_rec(
     role: &str,
-    direct_memberships: &HashMap<String, Vec<String>>,
+    direct_memberships: &BTreeMap<String, Vec<String>>,
     hosts_map: &HashMap<String, Value>,
-    visited: &mut HashSet<String>,
-) -> Result<HashSet<String>, String> {
+    visited: &mut BTreeSet<String>,
+) -> Result<BTreeSet<String>, String> {
     if visited.contains(role) {
         return Err(format!("Circular dependency detected in roles: {role}"));
     }
     visited.insert(role.to_string());
-    let mut hosts = HashSet::new();
+    let mut hosts = BTreeSet::new();
     if let Some(members) = direct_memberships.get(role) {
         for m in members {
             if hosts_map.contains_key(m) {
