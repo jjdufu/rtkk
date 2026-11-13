@@ -16,8 +16,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # Latest stable (2026-10-01). MSRV stays in Cargo.toml rust-version.
-  RUST_VERSION: "1.99.0"
+  # Latest stable (2026-11-09). MSRV stays in Cargo.toml rust-version.
+  RUST_VERSION: "1.100.0"
 
 jobs:
   meta:

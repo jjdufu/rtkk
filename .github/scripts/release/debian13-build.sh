@@ -4,7 +4,7 @@
 set -euo pipefail
 
 MODE="${1:-release}"
-RUST_VERSION="${RUST_VERSION:-1.99.0}"
+RUST_VERSION="${RUST_VERSION:-1.100.0}"
 
 . /etc/os-release
 if [ "${ID:-}" != "debian" ] || [ "${VERSION_ID:-}" != "13" ]; then
@@ -31,13 +31,14 @@ apt-get install -y --no-install-recommends \
   build-essential
 
 curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
-  | sh -s -- -y --default-toolchain "$RUST_VERSION" --profile minimal --component clippy
+  | sh -s -- -y --default-toolchain "$RUST_VERSION" --profile minimal --component clippy --component rustfmt
 # shellcheck disable=SC1091
 . "$HOME/.cargo/env"
 rustc --version
 
 case "$MODE" in
   ci)
+    cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --locked -- -D warnings
     cargo test --workspace --locked
     ;;
