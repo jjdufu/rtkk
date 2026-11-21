@@ -14,6 +14,14 @@ pub(crate) fn octal_modes_equal(remote_octal: &str, expected_mode: u32) -> bool 
     remote_norm == local_norm || (remote_norm.is_empty() && local_norm.is_empty())
 }
 
+pub(crate) fn shell_stat_octal_cmd(quoted_path: &str) -> String {
+    format!("(stat -c '%a' {quoted_path} 2>/dev/null || stat -f '%Lp' {quoted_path} 2>/dev/null)")
+}
+
+pub(crate) fn shell_sha256_cmd(quoted_path: &str) -> String {
+    format!("(sha256sum {quoted_path} 2>/dev/null || shasum -a 256 {quoted_path} 2>/dev/null)")
+}
+
 pub(crate) async fn chmod_remote(
     connector: &Connector,
     dest: &str,

@@ -1,5 +1,6 @@
 use super::remote_fs::{
     atomic_put_bytes, atomic_put_local_path, chmod_remote, mkdir_p, octal_modes_equal,
+    shell_sha256_cmd, shell_stat_octal_cmd,
 };
 use super::{Task, TaskModuleError, TaskResult, render_value};
 use crate::connector::Connector;
@@ -21,7 +22,11 @@ pub(crate) async fn check_remote_sha_and_mode(
     expected_mode: u32,
 ) -> Result<RemoteCheckOutcome, TaskModuleError> {
     let dest_q = shell_single_quote(dest);
-    let stat_cmd = format!("stat -c '%a' {dest_q} 2>/dev/null && sha256sum {dest_q} 2>/dev/null");
+    let stat_cmd = format!(
+        "{} && {}",
+        shell_stat_octal_cmd(&dest_q),
+        shell_sha256_cmd(&dest_q)
+    );
     let check_res = connector
         .execute_shell(&stat_cmd)
         .await

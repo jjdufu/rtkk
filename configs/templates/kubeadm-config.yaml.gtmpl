@@ -12,6 +12,10 @@ kind: ClusterConfiguration
 kubernetesVersion: {{ .kube_version }}
 controlPlaneEndpoint: {{ .control_plane_endpoint }}
 imageRepository: {{ .registry.url }}
+{{- if .coredns_version }}
+dns:
+  imageTag: {{ .coredns_version }}
+{{- end }}
 certificateValidityPeriod: {{ default "867240h" .cert_validity }}
 caCertificateValidityPeriod: {{ default "867240h" .cert_validity }}
 etcd:

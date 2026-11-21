@@ -1,0 +1,54 @@
+image:
+  override: "{{ .registry.url }}/cilium:{{ .cilium_version }}"
+  pullPolicy: "IfNotPresent"
+  useDigest: false
+
+operator:
+  replicas: {{ if gt (len .groups.k8s_cluster) 1 }}2{{ else }}1{{ end }}
+  image:
+    override: "{{ .registry.url }}/operator-generic:{{ .cilium_version }}"
+    pullPolicy: "IfNotPresent"
+    useDigest: false
+
+envoy:
+  enabled: true
+  image:
+    override: "{{ .registry.url }}/cilium-envoy:{{ .cilium_envoy_version }}"
+    pullPolicy: "IfNotPresent"
+    useDigest: false
+
+ipam:
+  mode: "cluster-pool"
+  operator:
+    clusterPoolIPv4PodCIDRList:
+      - "{{ .pod_subnet }}"
+    clusterPoolIPv4MaskSize: {{ int (default "24" .cluster_pool_mask_size) }}
+
+routingMode: "tunnel"
+tunnelProtocol: "vxlan"
+kubeProxyReplacement: "false"
+
+hubble:
+  enabled: true
+  relay:
+    enabled: false
+  ui:
+    enabled: false
+  tls:
+    enabled: true
+{{- if .cilium_ca_crt }}
+    auto:
+      enabled: false
+    server:
+      cert: "{{ .hubble_tls_crt.stdout }}"
+      key: "{{ .hubble_tls_key.stdout }}"
+
+tls:
+  ca:
+    cert: "{{ .cilium_ca_crt.stdout }}"
+    key: "{{ .cilium_ca_key.stdout }}"
+{{- else }}
+    auto:
+      enabled: true
+      method: "helm"
+{{- end }}

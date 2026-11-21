@@ -403,9 +403,9 @@ vars:
     - gcr.io
     - ghcr.io
 
-  kube_version: "v1.35.6"
-  etcd_version: "v3.6.12"
-  containerd_version: "1.7.32"          # 自动适配 1.x (config v2) 与 2.x (config v3)
+  kube_version: "v1.37.2"
+  etcd_version: "v3.7.4"
+  containerd_version: "2.4.2"           # 自动适配 1.x (config v2) 与 2.x (config v3)
 
 hosts:
   c23-p61: 10.0.0.61
@@ -426,11 +426,12 @@ roles:
 
 | 文件路径 | 职责说明 |
 |----------|----------|
-| `configs/download.yaml` | 在 `localhost` 下载离线二进制与归档（kubeadm / kubelet / kubectl / runc / containerd / etcd / CNI / helm），并通过内置变量 `{{ .rtkk_exe }}` 与 `{{ .inventory_file }}` 执行 `pull-images` 和批量 `push-images` |
-| `configs/images.yaml` | 定义 Kubernetes 控制面、kube-vip、CoreDNS、pause、NodeLocalDNS、Cilium、OpenEBS LocalPV 的源镜像与目标私库地址映射 |
-| `configs/deploy.yaml` | Play 0–8 全自动部署：环境检测清理 → 关闭 swap / 内核模块 / sysctl / DNS → containerd 与私库 `0600` `hosts.toml` → 外部高可用 etcd 集群与证书 → kube-vip 与控制面初始化/扩容 → Worker 加入 → Cilium / OpenEBS / NodeLocalDNS 部署 → 集群状态备份至 `./rtkk_bak/` |
+| `configs/download.yaml` | 在 `localhost` 下载离线二进制与归档（kubeadm / kubelet / kubectl / runc / containerd / etcd / CNI / helm / Cilium Helm Chart），并通过内置变量 `{{ .rtkk_exe }}` 与 `{{ .inventory_file }}` 执行 `pull-images` 和按需 `push-images` |
+| `configs/images.yaml` | 按 `cni_plugin`、`addons.*` 与 `extra_images` 动态裁剪并定义集群核心与可选插件镜像的源地址与目标私库映射 |
+| `configs/deploy.yaml` | Play 0–9 全自动部署：环境检测清理 → 关闭 swap / 内核模块 / sysctl / DNS → containerd 与私库 `0600` `hosts.toml` → 外部高可用 etcd 集群与证书 → kube-vip 与控制面初始化/扩容 → Worker 加入 → 可插拔 CNI（Cilium 离线 Chart / 自定义模板 / `none`）与可选插件（OpenEBS / NodeLocalDNS）部署 → 集群状态备份至 `./rtkk_bak/` |
 | `configs/cleanup.yaml` | 停止相关服务、执行 `kubeadm reset`、清理运行时目录、证书与二进制文件 |
-| `configs/templates/*.gtmpl` | `kubeadm`（`v1beta4`，面向 K8s `>= v1.31`）、`containerd`（按 `containerd_version` 自动切换 `1.x` `version = 2` 与 `2.x` `version = 3`）、`etcd`、`cilium`、`local-volume`、`nodelocaldns` 渲染模板 |
+| `configs/roles/*` | 可插拔集群扩展组件 Role（`cni-cilium`、`addon-openebs`、`addon-nodelocaldns`、`custom-manifests`） |
+| `configs/templates/*.gtmpl` | `kubeadm`（`v1beta4`，面向 K8s `>= v1.31`）、`containerd`（按 `containerd_version` 自动切换 `1.x` `version = 2` 与 `2.x` `version = 3`）、`etcd`、`cilium-values`（离线 Helm Chart 参数模板）、`local-volume`、`nodelocaldns` 渲染模板 |
 
 ---
 

@@ -1,0 +1,3 @@
+cni_plugin: "cilium"
+cert_validity: "867240h"
+cluster_pool_mask_size: "24"

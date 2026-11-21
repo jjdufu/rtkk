@@ -3,7 +3,9 @@
 //! manifests across 3-master `HA`, single-node control-plane, and dedicated external `etcd` topologies.
 
 use rtkk::inventory::{FlatInventory, Inventory, resolve_inventory};
-use rtkk::playbook::{compile_playbook, inject_dynamic_inventory_vars, inject_runtime_vars};
+use rtkk::playbook::{
+    compile_playbook, eval_condition, inject_dynamic_inventory_vars, inject_runtime_vars,
+};
 use rtkk::template::{json_to_gtmpl, render_template_string};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -13,14 +15,14 @@ const TEMPLATE_FILES: [&str; 6] = [
     "kubeadm-config.yaml.gtmpl",
     "containerd-config.toml.gtmpl",
     "etcd.service.gtmpl",
-    "cilium.yaml.gtmpl",
+    "cilium-values.yaml.gtmpl",
     "local-volume.yaml.gtmpl",
     "nodelocaldns.yaml.gtmpl",
 ];
 
 const YAML_MANIFEST_TEMPLATES: [&str; 4] = [
     "kubeadm-config.yaml.gtmpl",
-    "cilium.yaml.gtmpl",
+    "cilium-values.yaml.gtmpl",
     "local-volume.yaml.gtmpl",
     "nodelocaldns.yaml.gtmpl",
 ];
@@ -147,21 +149,13 @@ fn render_and_validate_all_templates(
 }
 
 fn find_cilium_operator_replicas(cilium_docs: &[Value]) -> Result<u64, String> {
-    for doc in cilium_docs {
-        let kind = doc.get("kind").and_then(Value::as_str);
-        let name = doc
-            .get("metadata")
-            .and_then(|m| m.get("name"))
-            .and_then(Value::as_str);
-        if kind == Some("Deployment") && name == Some("cilium-operator") {
-            return doc
-                .get("spec")
-                .and_then(|s| s.get("replicas"))
-                .and_then(Value::as_u64)
-                .ok_or_else(|| "cilium-operator Deployment missing integer spec.replicas".into());
-        }
-    }
-    Err("cilium-operator Deployment not found in cilium.yaml".to_string())
+    let doc = cilium_docs
+        .first()
+        .ok_or("cilium-values.yaml must contain a root YAML mapping")?;
+    doc.get("operator")
+        .and_then(|op| op.get("replicas"))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "cilium-values.yaml missing integer operator.replicas".into())
 }
 
 #[test]
@@ -188,19 +182,25 @@ fn render_ha_3master_3worker_topology_and_verify_defaults() -> Result<(), String
         .get("containerd-config.toml.gtmpl")
         .ok_or("missing containerd render")?;
     ensure(
-        containerd_toml.contains("sandbox_image = \"10.0.0.10/rtkk/pause:")
+        containerd_toml.contains("version = 3")
+            && containerd_toml.contains("sandbox = \"10.0.0.10/rtkk/pause:3.10.2\"")
             && containerd_toml.contains("SystemdCgroup = true"),
-        "containerd-config.toml must render private pause image and SystemdCgroup = true",
+        "containerd-config.toml must render v3 private pause image and SystemdCgroup = true",
     )?;
 
     let cilium_yaml = rendered
-        .get("cilium.yaml.gtmpl")
-        .ok_or("missing cilium render")?;
+        .get("cilium-values.yaml.gtmpl")
+        .ok_or("missing cilium-values render")?;
     let cilium_docs = parse_multi_doc_yaml("cilium-ha", cilium_yaml)?;
     let replicas = find_cilium_operator_replicas(&cilium_docs)?;
     ensure(
         replicas == 2,
         &format!("HA 6-node cluster should run 2 cilium-operator replicas, got {replicas}"),
+    )?;
+    ensure(
+        cilium_yaml.contains("override: \"10.0.0.10/rtkk/cilium:v1.20.5\"")
+            && cilium_yaml.contains("override: \"10.0.0.10/rtkk/operator-generic:v1.20.5\""),
+        "cilium-values.yaml must point cilium and operator-generic overrides to private registry",
     )?;
 
     let kubeadm_yaml = rendered
@@ -222,6 +222,16 @@ fn verify_kubeadm_validity_and_openebs_analytics(
 ) -> Result<(), String> {
     let docs_default = parse_multi_doc_yaml("kubeadm-default", default_kubeadm_yaml)?;
     check_cluster_config_cert_validity(&docs_default, "867240h")?;
+    let dns_tag = docs_default
+        .iter()
+        .find(|d| d.get("kind").and_then(Value::as_str) == Some("ClusterConfiguration"))
+        .and_then(|d| d.get("dns"))
+        .and_then(|dns| dns.get("imageTag"))
+        .and_then(Value::as_str);
+    ensure(
+        dns_tag == Some("v1.14.6"),
+        &format!("expected ClusterConfiguration.dns.imageTag == \"v1.14.6\", got {dns_tag:?}"),
+    )?;
 
     let mut vars_unset = host_context_json(flat, "c23-p61")?;
     if let Some(obj) = vars_unset.as_object_mut() {
@@ -319,8 +329,8 @@ fn render_single_node_control_plane_only_topology_sets_cilium_operator_replicas_
     let flat = finalize_flat_inventory(&inv)?;
     let rendered = render_and_validate_all_templates(&flat, "c23-p61", "c23-p61")?;
     let cilium_yaml = rendered
-        .get("cilium.yaml.gtmpl")
-        .ok_or("missing single-node cilium render")?;
+        .get("cilium-values.yaml.gtmpl")
+        .ok_or("missing single-node cilium-values render")?;
     let cilium_docs = parse_multi_doc_yaml("cilium-single-node", cilium_yaml)?;
     let replicas = find_cilium_operator_replicas(&cilium_docs)?;
     ensure(
@@ -336,7 +346,23 @@ fn render_single_node_control_plane_only_topology_sets_cilium_operator_replicas_
 fn render_cilium_with_dynamic_pki_registers_secrets_without_static_keys() -> Result<(), String> {
     let inv = load_base_inventory()?;
     let flat = finalize_flat_inventory(&inv)?;
-    let mut vars = host_context_json(&flat, "c23-p61")?;
+    let base_vars = host_context_json(&flat, "c23-p61")?;
+
+    let fallback_yaml = render_config_template("templates/cilium-values.yaml.gtmpl", &base_vars)?;
+    let fallback_docs = parse_multi_doc_yaml("cilium-auto-tls", &fallback_yaml)?;
+    let auto_enabled = fallback_docs
+        .first()
+        .and_then(|d| d.get("hubble"))
+        .and_then(|h| h.get("tls"))
+        .and_then(|t| t.get("auto"))
+        .and_then(|a| a.get("enabled"))
+        .and_then(Value::as_bool);
+    ensure(
+        auto_enabled == Some(true),
+        "cilium-values.yaml without pre-generated PKI should enable hubble.tls.auto",
+    )?;
+
+    let mut vars = base_vars;
     if let Some(obj) = vars.as_object_mut() {
         obj.insert("cilium_ca_crt".to_string(), json!({ "stdout": "Y2EtY3J0" }));
         obj.insert("cilium_ca_key".to_string(), json!({ "stdout": "Y2Eta2V5" }));
@@ -349,25 +375,31 @@ fn render_cilium_with_dynamic_pki_registers_secrets_without_static_keys() -> Res
             json!({ "stdout": "dGxzLWtleQ==" }),
         );
     }
-    let cilium_yaml = render_config_template("templates/cilium.yaml.gtmpl", &vars)?;
+    let cilium_yaml = render_config_template("templates/cilium-values.yaml.gtmpl", &vars)?;
     let docs = parse_multi_doc_yaml("cilium-dynamic-pki", &cilium_yaml)?;
-    let has_cilium_ca = docs.iter().any(|d| {
-        d.get("kind").and_then(Value::as_str) == Some("Secret")
-            && d.get("metadata")
-                .and_then(|m| m.get("name"))
-                .and_then(Value::as_str)
-                == Some("cilium-ca")
-    });
-    let has_hubble_tls = docs.iter().any(|d| {
-        d.get("kind").and_then(Value::as_str) == Some("Secret")
-            && d.get("metadata")
-                .and_then(|m| m.get("name"))
-                .and_then(Value::as_str)
-                == Some("hubble-server-certs")
-    });
+    let root = docs.first().ok_or("missing cilium-values root doc")?;
+    let auto_disabled = root
+        .get("hubble")
+        .and_then(|h| h.get("tls"))
+        .and_then(|t| t.get("auto"))
+        .and_then(|a| a.get("enabled"))
+        .and_then(Value::as_bool);
+    let ca_crt = root
+        .get("tls")
+        .and_then(|t| t.get("ca"))
+        .and_then(|ca| ca.get("cert"))
+        .and_then(Value::as_str);
+    let srv_crt = root
+        .get("hubble")
+        .and_then(|h| h.get("tls"))
+        .and_then(|t| t.get("server"))
+        .and_then(|s| s.get("cert"))
+        .and_then(Value::as_str);
     ensure(
-        has_cilium_ca && has_hubble_tls,
-        "dynamic PKI variables must render cilium-ca and hubble-server-certs Secrets",
+        auto_disabled == Some(false)
+            && ca_crt == Some("Y2EtY3J0")
+            && srv_crt == Some("dGxzLWNydA=="),
+        "dynamic PKI variables must populate tls.ca and hubble.tls.server with auto.enabled=false",
     )
 }
 
@@ -450,7 +482,7 @@ const EXPECTED_CONTAINERD_V2: &str = "\
 version = 2
 [plugins]
   [plugins.\"io.containerd.grpc.v1.cri\"]
-    sandbox_image = \"10.0.0.10/rtkk/pause:3.10.1\"
+    sandbox_image = \"10.0.0.10/rtkk/pause:3.10.2\"
     [plugins.\"io.containerd.grpc.v1.cri\".cni]
       bin_dir = \"/opt/cni/bin\"
       conf_dir = \"/etc/cni/net.d\"
@@ -472,7 +504,7 @@ version = 3
   [plugins.\"io.containerd.cri.v1.images\"]
     snapshotter = \"overlayfs\"
     [plugins.\"io.containerd.cri.v1.images\".pinned_images]
-      sandbox = \"10.0.0.10/rtkk/pause:3.10.1\"
+      sandbox = \"10.0.0.10/rtkk/pause:3.10.2\"
     [plugins.\"io.containerd.cri.v1.images\".registry]
       config_path = \"/etc/containerd/certs.d\"
   [plugins.\"io.containerd.cri.v1.runtime\"]
@@ -496,7 +528,7 @@ version = 3
   [plugins.\"io.containerd.cri.v1.images\"]
     snapshotter = \"overlayfs\"
     [plugins.\"io.containerd.cri.v1.images\".pinned_images]
-      sandbox = \"10.0.0.10/rtkk/pause:3.10.1\"
+      sandbox = \"10.0.0.10/rtkk/pause:3.10.2\"
     [plugins.\"io.containerd.cri.v1.images\".registry]
       config_path = \"/etc/containerd/certs.d\"
   [plugins.\"io.containerd.cri.v1.runtime\"]
@@ -521,11 +553,11 @@ fn render_containerd_config_auto_switches_between_v2_and_v3_across_versions() ->
     let flat = finalize_flat_inventory(&inv)?;
     let base_vars = host_context_json(&flat, "c23-p61")?;
 
-    for v1 in [None, Some("1.7.32"), Some("v1.7.32"), Some("1.7.32-rc.1")] {
-        let out = render_containerd_for_version(&base_vars, v1)?;
+    for v1 in ["1.7.32", "v1.7.32", "1.7.32-rc.1"] {
+        let out = render_containerd_for_version(&base_vars, Some(v1))?;
         ensure(
             out == EXPECTED_CONTAINERD_V2,
-            &format!("unexpected Containerd 1.x TOML for {v1:?}:\n{out}"),
+            &format!("unexpected Containerd 1.x TOML for {v1}:\n{out}"),
         )?;
     }
 
@@ -537,11 +569,18 @@ fn render_containerd_config_auto_switches_between_v2_and_v3_across_versions() ->
         )?;
     }
 
-    for v2_1_plus in ["2.1.0", "2.2.0", "v2.2.0", "2.4.2", "v2.4.2-rc.1"] {
-        let out = render_containerd_for_version(&base_vars, Some(v2_1_plus))?;
+    for v2_1_plus in [
+        None,
+        Some("2.1.0"),
+        Some("2.2.0"),
+        Some("v2.2.0"),
+        Some("2.4.2"),
+        Some("v2.4.2-rc.1"),
+    ] {
+        let out = render_containerd_for_version(&base_vars, v2_1_plus)?;
         ensure(
             out == EXPECTED_CONTAINERD_V3_2_1_PLUS,
-            &format!("unexpected Containerd 2.1+ TOML for {v2_1_plus}:\n{out}"),
+            &format!("unexpected Containerd 2.1+ TOML for {v2_1_plus:?}:\n{out}"),
         )?;
     }
     Ok(())
@@ -579,4 +618,125 @@ fn download_playbook_normalizes_containerd_version_with_or_without_v_prefix() ->
         )?;
     }
     Ok(())
+}
+
+#[test]
+fn images_yaml_supports_optional_cni_addons_and_extra_images() -> Result<(), String> {
+    let inv = load_base_inventory()?;
+    let flat = finalize_flat_inventory(&inv)?;
+    let base_vars = host_context_json(&flat, "c23-p61")?;
+
+    let mut minimal_vars = base_vars.clone();
+    if let Some(obj) = minimal_vars.as_object_mut() {
+        obj.insert("cni_plugin".to_string(), json!("none"));
+        obj.insert(
+            "addons".to_string(),
+            json!({ "nodelocaldns": false, "openebs_localpv": false }),
+        );
+    }
+    let minimal_rendered = render_config_template("images.yaml", &minimal_vars)?;
+    let minimal_doc: Value = serde_yml::from_str(&minimal_rendered).map_err(|e| e.to_string())?;
+    let minimal_items = minimal_doc
+        .get("images")
+        .and_then(Value::as_array)
+        .ok_or("missing images array")?;
+    ensure(
+        minimal_items.len() == 7,
+        &format!(
+            "expected 7 core images when CNI & addons disabled, got {}",
+            minimal_items.len()
+        ),
+    )?;
+    ensure(
+        !minimal_rendered.contains("cilium")
+            && !minimal_rendered.contains("provisioner-localpv")
+            && !minimal_rendered.contains("k8s-dns-node-cache"),
+        "disabled CNI and addons must be omitted from rendered images.yaml",
+    )?;
+
+    let mut custom_vars = base_vars;
+    if let Some(obj) = custom_vars.as_object_mut() {
+        obj.insert("cni_plugin".to_string(), json!("custom"));
+        obj.insert(
+            "extra_images".to_string(),
+            json!([{
+                "name": "calico-node",
+                "source": "quay.io/calico/node:v3.30.0",
+                "target": "10.0.0.10/rtkk/calico-node:v3.30.0"
+            }]),
+        );
+    }
+    let custom_rendered = render_config_template("images.yaml", &custom_vars)?;
+    ensure(
+        !custom_rendered.contains("quay.io/cilium/cilium")
+            && custom_rendered.contains("quay.io/calico/node:v3.30.0"),
+        "custom CNI mode with extra_images must replace Cilium with custom image entries",
+    )
+}
+
+#[test]
+fn deploy_playbook_compiles_pluggable_addon_roles_and_evaluates_conditions() -> Result<(), String> {
+    let pb = compile_playbook(&configs_dir().join("deploy.yaml"))?;
+    let addons_play =
+        pb.0.iter()
+            .find(|p| {
+                p.name
+                    .as_deref()
+                    .is_some_and(|n| n.contains("Pluggable CNI"))
+            })
+            .ok_or("missing Pluggable CNI play in deploy.yaml")?;
+    let role_blocks = addons_play
+        .tasks
+        .as_ref()
+        .ok_or("Pluggable CNI play missing compiled role tasks")?;
+    ensure(
+        role_blocks.len() == 4,
+        &format!(
+            "expected 4 compiled addon role blocks, got {}",
+            role_blocks.len()
+        ),
+    )?;
+
+    let inv = load_base_inventory()?;
+    let flat = finalize_flat_inventory(&inv)?;
+    let cp1 = host_context_json(&flat, "c23-p61")?;
+    let cp2 = host_context_json(&flat, "c23-p62")?;
+
+    let cilium_when = role_blocks
+        .first()
+        .and_then(|t| t.when.as_ref())
+        .ok_or("missing cni-cilium role condition")?;
+    let openebs_when = role_blocks
+        .get(1)
+        .and_then(|t| t.when.as_ref())
+        .ok_or("missing addon-openebs role condition")?;
+    let custom_when = role_blocks
+        .get(3)
+        .and_then(|t| t.when.as_ref())
+        .ok_or("missing custom-manifests role condition")?;
+
+    ensure(
+        eval_condition(cilium_when, &cp1)? && !eval_condition(cilium_when, &cp2)?,
+        "cni-cilium must run on first_control_plane only by default",
+    )?;
+    ensure(
+        eval_condition(openebs_when, &cp1)? && !eval_condition(custom_when, &cp1)?,
+        "default inventory must enable openebs and skip empty custom_manifests",
+    )?;
+
+    let mut bare_cp1 = cp1;
+    if let Some(obj) = bare_cp1.as_object_mut() {
+        obj.insert("cni_plugin".to_string(), json!("none"));
+        obj.insert("addons".to_string(), json!({ "openebs_localpv": false }));
+        obj.insert(
+            "custom_manifests".to_string(),
+            json!(["templates/local-volume.yaml.gtmpl"]),
+        );
+    }
+    ensure(
+        !eval_condition(cilium_when, &bare_cp1)?
+            && !eval_condition(openebs_when, &bare_cp1)?
+            && eval_condition(custom_when, &bare_cp1)?,
+        "toggling cni_plugin=none, openebs_localpv=false, and custom_manifests must flip role conditions",
+    )
 }

@@ -1,0 +1,19 @@
+- name: Ensure addons directory exists for custom manifests
+  command: "mkdir -p /etc/kubernetes/addons"
+- name: Render custom .gtmpl addon or CNI templates
+  template:
+    src: "{{ .item }}"
+    dest: '/etc/kubernetes/addons/custom-{{ trimSuffix ".gtmpl" (regexReplaceAll "^.*/" .item "") }}'
+    mode: "0644"
+  with_items: "{{ .custom_manifests }}"
+  when: 'regexMatch "\\.gtmpl$" .item'
+- name: Upload static custom .yaml addon or CNI manifests
+  copy:
+    src: "{{ .item }}"
+    dest: '/etc/kubernetes/addons/custom-{{ regexReplaceAll "^.*/" .item "" }}'
+    mode: "0644"
+  with_items: "{{ .custom_manifests }}"
+  when: 'not (regexMatch "\\.gtmpl$" .item)'
+- name: Apply custom manifests in configured order
+  shell: 'kubectl apply -f /etc/kubernetes/addons/custom-{{ trimSuffix ".gtmpl" (regexReplaceAll "^.*/" .item "") }}'
+  with_items: "{{ .custom_manifests }}"

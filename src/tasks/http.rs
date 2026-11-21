@@ -206,7 +206,7 @@ async fn check_existing_on_target(
             return Ok(None);
         }
         let stat_res = connector
-            .execute_shell(&format!("stat -c '%a' {dest_q} 2>/dev/null"))
+            .execute_shell(&super::remote_fs::shell_stat_octal_cmd(&dest_q))
             .await
             .map_err(TaskModuleError::from_connector)?;
         let cur_mode = String::from_utf8_lossy(&stat_res.stdout);
@@ -221,10 +221,15 @@ async fn check_existing_on_target(
 
     let check_cmd = if sha256_opt.is_some() {
         format!(
-            "[ -f {dest_q} ] && stat -c '%a' {dest_q} 2>/dev/null && sha256sum {dest_q} 2>/dev/null"
+            "[ -f {dest_q} ] && {} && {}",
+            super::remote_fs::shell_stat_octal_cmd(&dest_q),
+            super::remote_fs::shell_sha256_cmd(&dest_q),
         )
     } else {
-        format!("[ -s {dest_q} ] && stat -c '%a' {dest_q} 2>/dev/null")
+        format!(
+            "[ -s {dest_q} ] && {}",
+            super::remote_fs::shell_stat_octal_cmd(&dest_q)
+        )
     };
     let res = connector
         .execute_shell(&check_cmd)

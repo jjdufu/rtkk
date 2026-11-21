@@ -30,13 +30,13 @@ vars:
   pki_dir: "./pki"
   # Certificate validity period (99y default; "8760h" / "1y" / "10y" also supported)
   cert_validity: "867240h"
-  kube_version: "v1.35.6"
-  etcd_version: "v3.6.12"
+  kube_version: "v1.37.2"
+  etcd_version: "v3.7.4"
   # Containerd version (1.x renders config.toml v2; 2.x renders config.toml v3)
-  containerd_version: "1.7.32"
-  runc_version: "v1.1.15"
-  cni_version: "v1.6.0"
-  helm_version: "v3.15.3"
+  containerd_version: "2.4.2"
+  runc_version: "v1.5.3"
+  cni_version: "v1.10.0"
+  helm_version: "v4.3.2"
   control_plane_endpoint: "192.168.26.68:6443"
   # kube-vip ARP interface on control-plane nodes (must match primary NIC)
   vip_interface: "ens33"
@@ -58,13 +58,22 @@ vars:
     - higress-registry.cn-hangzhou.cr.aliyuncs.com
     - ecr-public.aws.com
     - code.forgejo.org
-  coredns_version: "v1.13.1"
-  kube_vip_version: "v0.7.2"
-  pause_version: "3.10.1"
-  nodelocaldns_version: "1.26.4"
-  cilium_version: "v1.19.4"
-  cilium_envoy_version: "v1.36.6-1776000132-2437d2edeaf4d9b56ef279bd0d71127440c067aa"
-  openebs_version: "4.4.0"
+  coredns_version: "v1.14.6"
+  kube_vip_version: "v1.3.2"
+  pause_version: "3.10.2"
+  nodelocaldns_version: "1.27.1"
+  cilium_version: "v1.20.5"
+  cilium_envoy_version: "v1.39.6-1794557904-dee711ff0e84b106edd0abcdd71961af1b870359"
+  openebs_version: "4.6.0"
+  # Pluggable CNI ("cilium" | "custom" | "none") and optional cluster addons
+  cni_plugin: "cilium"
+  addons:
+    nodelocaldns: true
+    openebs_localpv: true
+  # Optional ordered list of custom .gtmpl or .yaml manifests applied on first control plane
+  custom_manifests: []
+  # Optional extra images ({name, source, target}) synchronized alongside core images
+  extra_images: []
   dns_upstream: "192.168.26.111"
 hosts:
   c23-p61: 192.168.26.61

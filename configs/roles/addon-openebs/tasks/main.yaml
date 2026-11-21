@@ -1,0 +1,9 @@
+- name: Ensure addons directory exists for OpenEBS
+  command: "mkdir -p /etc/kubernetes/addons"
+- name: Render OpenEBS LocalPV manifest
+  template:
+    src: "templates/local-volume.yaml.gtmpl"
+    dest: "/etc/kubernetes/addons/local-volume.yaml"
+    mode: "0644"
+- name: Apply OpenEBS LocalPV manifest
+  shell: "kubectl apply -f /etc/kubernetes/addons/local-volume.yaml"

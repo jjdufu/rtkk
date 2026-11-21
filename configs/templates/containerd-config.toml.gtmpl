@@ -1,4 +1,4 @@
-{{- $ctdVer := regexReplaceAll "-.*$" (default "1.7.32" .containerd_version) "" -}}
+{{- $ctdVer := regexReplaceAll "-.*$" (default "2.4.2" .containerd_version) "" -}}
 {{- if semverCompare ">= 2.0.0" $ctdVer -}}
 version = 3
 [plugins]

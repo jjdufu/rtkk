@@ -386,6 +386,8 @@
                 value: "{{ .vip_interface }}"
               - name: vip_cidr
                 value: "32"
+              - name: vip_subnet
+                value: "32"
               - name: cp_enable
                 value: "true"
               - name: cp_namespace
@@ -552,6 +554,8 @@
                 value: "{{ .vip_interface }}"
               - name: vip_cidr
                 value: "32"
+              - name: vip_subnet
+                value: "32"
               - name: cp_enable
                 value: "true"
               - name: cp_namespace
@@ -634,82 +638,29 @@
       shell: '{{ index .hostvars .first_control_plane "join_cmd" "stdout" }} --cri-socket=unix:///var/run/containerd/containerd.sock'
       when: 'ne .worker_joined.stdout "true"'
 
-- name: Play 6 - Deploy Kubernetes Addons (Cilium, OpenEBS LocalPV, NodeLocalDNS)
+- name: Play 5b - Configure Control Plane Workload Scheduling Policy
   hosts: kube_control_plane
   tasks:
     - name: Allow workload scheduling on control plane when no dedicated worker nodes exist
       shell: "kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true"
       when: 'and (eq .inventory_hostname .first_control_plane) (eq (len .groups.kube_node) 0)'
-    - name: Create addons and Cilium PKI directories
-      command: "mkdir -p /etc/kubernetes/addons /etc/kubernetes/pki/cilium"
-      when: 'eq .inventory_hostname .first_control_plane'
-    - name: Generate Cilium internal CA certificate and key
-      gen_cert:
-        cn: "Cilium CA"
-        out_key: "/etc/kubernetes/pki/cilium/ca.key"
-        out_cert: "/etc/kubernetes/pki/cilium/ca.crt"
-        is_ca: true
-        state: "ifnotpresent"
-        date: '{{ default "867240h" .cert_validity }}'
-      when: 'eq .inventory_hostname .first_control_plane'
-    - name: Generate Hubble server TLS certificate and key
-      gen_cert:
-        cn: "*.default.hubble-grpc.cilium.io"
-        out_key: "/etc/kubernetes/pki/cilium/hubble-server.key"
-        out_cert: "/etc/kubernetes/pki/cilium/hubble-server.crt"
-        root_key: "/etc/kubernetes/pki/cilium/ca.key"
-        root_cert: "/etc/kubernetes/pki/cilium/ca.crt"
-        state: "ifnotpresent"
-        date: '{{ default "867240h" .cert_validity }}'
-        sans:
-          - "*.default.hubble-grpc.cilium.io"
-          - "*.kube-system.hubble-grpc.cilium.io"
-          - "127.0.0.1"
-          - "localhost"
-      when: 'eq .inventory_hostname .first_control_plane'
-    - name: Encode Cilium CA certificate as base64
-      shell: "base64 -w 0 /etc/kubernetes/pki/cilium/ca.crt"
-      when: 'eq .inventory_hostname .first_control_plane'
-      register: cilium_ca_crt
-    - name: Encode Cilium CA private key as base64
-      shell: "base64 -w 0 /etc/kubernetes/pki/cilium/ca.key"
-      when: 'eq .inventory_hostname .first_control_plane'
-      register: cilium_ca_key
-    - name: Encode Hubble server TLS certificate as base64
-      shell: "base64 -w 0 /etc/kubernetes/pki/cilium/hubble-server.crt"
-      when: 'eq .inventory_hostname .first_control_plane'
-      register: hubble_tls_crt
-    - name: Encode Hubble server TLS private key as base64
-      shell: "base64 -w 0 /etc/kubernetes/pki/cilium/hubble-server.key"
-      when: 'eq .inventory_hostname .first_control_plane'
-      register: hubble_tls_key
-    - name: Render Cilium manifest
-      template:
-        src: "templates/cilium.yaml.gtmpl"
-        dest: "/etc/kubernetes/addons/cilium.yaml"
-        mode: "0600"
-      when: 'eq .inventory_hostname .first_control_plane'
-    - name: Render OpenEBS LocalPV manifest
-      template:
-        src: "templates/local-volume.yaml.gtmpl"
-        dest: "/etc/kubernetes/addons/local-volume.yaml"
-        mode: "0644"
-      when: 'eq .inventory_hostname .first_control_plane'
-    - name: Render NodeLocalDNS manifest
-      template:
-        src: "templates/nodelocaldns.yaml.gtmpl"
-        dest: "/etc/kubernetes/addons/nodelocaldns.yaml"
-        mode: "0644"
-      when: 'eq .inventory_hostname .first_control_plane'
-    - name: Apply Cilium manifest
-      shell: "kubectl apply -f /etc/kubernetes/addons/cilium.yaml"
-      when: 'eq .inventory_hostname .first_control_plane'
-    - name: Apply OpenEBS LocalPV manifest
-      shell: "kubectl apply -f /etc/kubernetes/addons/local-volume.yaml"
-      when: 'eq .inventory_hostname .first_control_plane'
-    - name: Apply NodeLocalDNS manifest
-      shell: "kubectl apply -f /etc/kubernetes/addons/nodelocaldns.yaml"
-      when: 'eq .inventory_hostname .first_control_plane'
+      tags: ["cni", "addons"]
+
+- name: Play 6 - Deploy Pluggable CNI and Cluster Addons
+  hosts: kube_control_plane
+  roles:
+    - role: cni-cilium
+      tags: ["cni", "cilium", "addons"]
+      when: 'and (eq .inventory_hostname .first_control_plane) (eq (default "cilium" .cni_plugin) "cilium")'
+    - role: addon-openebs
+      tags: ["addons", "openebs"]
+      when: '{{- if ne .inventory_hostname .first_control_plane -}}false{{- else if .addons -}}{{ and (ne .addons.openebs_localpv false) (ne .addons.openebs_localpv "false") }}{{- else -}}true{{- end -}}'
+    - role: addon-nodelocaldns
+      tags: ["addons", "nodelocaldns"]
+      when: '{{- if ne .inventory_hostname .first_control_plane -}}false{{- else if .addons -}}{{ and (ne .addons.nodelocaldns false) (ne .addons.nodelocaldns "false") }}{{- else -}}true{{- end -}}'
+    - role: custom-manifests
+      tags: ["cni", "addons", "custom"]
+      when: 'and (eq .inventory_hostname .first_control_plane) (not (empty .custom_manifests))'
 
 - name: Play 7 - Backup Etcd PKI and Unit Configurations
   hosts: etcd

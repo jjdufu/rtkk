@@ -1,0 +1,50 @@
+- name: Create Cilium addons and PKI directories
+  command: "mkdir -p /etc/kubernetes/addons /etc/kubernetes/pki/cilium"
+- name: Generate Cilium internal CA certificate and key
+  gen_cert:
+    cn: "Cilium CA"
+    out_key: "/etc/kubernetes/pki/cilium/ca.key"
+    out_cert: "/etc/kubernetes/pki/cilium/ca.crt"
+    is_ca: true
+    state: "ifnotpresent"
+    date: '{{ default "867240h" .cert_validity }}'
+- name: Generate Hubble server TLS certificate and key
+  gen_cert:
+    cn: "*.default.hubble-grpc.cilium.io"
+    out_key: "/etc/kubernetes/pki/cilium/hubble-server.key"
+    out_cert: "/etc/kubernetes/pki/cilium/hubble-server.crt"
+    root_key: "/etc/kubernetes/pki/cilium/ca.key"
+    root_cert: "/etc/kubernetes/pki/cilium/ca.crt"
+    state: "ifnotpresent"
+    date: '{{ default "867240h" .cert_validity }}'
+    sans:
+      - "*.default.hubble-grpc.cilium.io"
+      - "*.kube-system.hubble-grpc.cilium.io"
+      - "127.0.0.1"
+      - "localhost"
+- name: Encode Cilium CA certificate as base64
+  shell: "base64 -w 0 /etc/kubernetes/pki/cilium/ca.crt"
+  register: cilium_ca_crt
+- name: Encode Cilium CA private key as base64
+  shell: "base64 -w 0 /etc/kubernetes/pki/cilium/ca.key"
+  register: cilium_ca_key
+- name: Encode Hubble server TLS certificate as base64
+  shell: "base64 -w 0 /etc/kubernetes/pki/cilium/hubble-server.crt"
+  register: hubble_tls_crt
+- name: Encode Hubble server TLS private key as base64
+  shell: "base64 -w 0 /etc/kubernetes/pki/cilium/hubble-server.key"
+  register: hubble_tls_key
+- name: Render Cilium Helm values file
+  template:
+    src: "templates/cilium-values.yaml.gtmpl"
+    dest: "/etc/kubernetes/addons/cilium-values.yaml"
+    mode: "0600"
+- name: Upload offline Cilium Helm chart archive
+  copy:
+    src: "./downloads/tar/cilium-chart.tgz"
+    dest: "/tmp/cilium-chart.tgz"
+    mode: "0644"
+- name: Render Cilium manifest from offline Helm chart
+  shell: 'helm template cilium /tmp/cilium-chart.tgz --namespace kube-system --kube-version {{ trimPrefix "v" (trimPrefix "V" .kube_version) }} -f /etc/kubernetes/addons/cilium-values.yaml > /etc/kubernetes/addons/cilium.yaml && chmod 0600 /etc/kubernetes/addons/cilium.yaml && rm -f /tmp/cilium-chart.tgz'
+- name: Apply Cilium manifest
+  shell: "kubectl apply -f /etc/kubernetes/addons/cilium.yaml"

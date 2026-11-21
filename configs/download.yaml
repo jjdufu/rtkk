@@ -3,49 +3,69 @@
   tasks:
     - name: Create local download directories
       command: "mkdir -p ./downloads/bin ./downloads/tar ./downloads/images ./logs"
+      tags: ["download"]
     - name: Download kubeadm binary
       http_get_file:
         url: '{{- $ver := trimPrefix "v" (trimPrefix "V" .kube_version) -}}https://dl.k8s.io/release/v{{ $ver }}/bin/linux/{{ default "amd64" .download_arch }}/kubeadm'
         dest: "./downloads/bin/kubeadm"
         mode: "0755"
+      tags: ["download", "binaries"]
     - name: Download kubelet binary
       http_get_file:
         url: '{{- $ver := trimPrefix "v" (trimPrefix "V" .kube_version) -}}https://dl.k8s.io/release/v{{ $ver }}/bin/linux/{{ default "amd64" .download_arch }}/kubelet'
         dest: "./downloads/bin/kubelet"
         mode: "0755"
+      tags: ["download", "binaries"]
     - name: Download kubectl binary
       http_get_file:
         url: '{{- $ver := trimPrefix "v" (trimPrefix "V" .kube_version) -}}https://dl.k8s.io/release/v{{ $ver }}/bin/linux/{{ default "amd64" .download_arch }}/kubectl'
         dest: "./downloads/bin/kubectl"
         mode: "0755"
+      tags: ["download", "binaries"]
     - name: Download containerd archive
       http_get_file:
-        url: '{{- $ver := trimPrefix "v" (trimPrefix "V" (default "1.7.32" .containerd_version)) -}}https://github.com/containerd/containerd/releases/download/v{{ $ver }}/containerd-{{ $ver }}-linux-{{ default "amd64" .download_arch }}.tar.gz'
+        url: '{{- $ver := trimPrefix "v" (trimPrefix "V" (default "2.4.2" .containerd_version)) -}}https://github.com/containerd/containerd/releases/download/v{{ $ver }}/containerd-{{ $ver }}-linux-{{ default "amd64" .download_arch }}.tar.gz'
         dest: "./downloads/tar/containerd.tar.gz"
         mode: "0644"
+      tags: ["download", "archives"]
     - name: Download runc binary
       http_get_file:
         url: '{{- $ver := trimPrefix "v" (trimPrefix "V" .runc_version) -}}https://github.com/opencontainers/runc/releases/download/v{{ $ver }}/runc.{{ default "amd64" .download_arch }}'
         dest: "./downloads/bin/runc"
         mode: "0755"
+      tags: ["download", "binaries"]
     - name: Download etcd archive
       http_get_file:
         url: '{{- $ver := trimPrefix "v" (trimPrefix "V" .etcd_version) -}}https://github.com/etcd-io/etcd/releases/download/v{{ $ver }}/etcd-v{{ $ver }}-linux-{{ default "amd64" .download_arch }}.tar.gz'
         dest: "./downloads/tar/etcd.tar.gz"
         mode: "0644"
+      tags: ["download", "archives"]
     - name: Download CNI plugins archive
       http_get_file:
         url: '{{- $ver := trimPrefix "v" (trimPrefix "V" .cni_version) -}}https://github.com/containernetworking/plugins/releases/download/v{{ $ver }}/cni-plugins-linux-{{ default "amd64" .download_arch }}-v{{ $ver }}.tgz'
         dest: "./downloads/tar/cni-plugins.tgz"
         mode: "0644"
+      tags: ["download", "archives"]
     - name: Download Helm archive
       http_get_file:
         url: '{{- $ver := trimPrefix "v" (trimPrefix "V" .helm_version) -}}https://get.helm.sh/helm-v{{ $ver }}-linux-{{ default "amd64" .download_arch }}.tar.gz'
         dest: "./downloads/tar/helm.tar.gz"
         mode: "0644"
+      tags: ["download", "archives"]
     - name: Extract Helm binary
       shell: 'tar -zxvf ./downloads/tar/helm.tar.gz --strip-components=1 -C ./downloads/bin linux-{{ default "amd64" .download_arch }}/helm && chmod 0755 ./downloads/bin/kubeadm ./downloads/bin/kubelet ./downloads/bin/kubectl ./downloads/bin/runc ./downloads/bin/helm'
+      tags: ["download", "binaries"]
+    - name: Download Cilium Helm chart archive
+      http_get_file:
+        url: '{{- $ver := trimPrefix "v" (trimPrefix "V" .cilium_version) -}}https://helm.cilium.io/cilium-{{ $ver }}.tgz'
+        dest: "./downloads/tar/cilium-chart.tgz"
+        mode: "0644"
+      when: 'eq (default "cilium" .cni_plugin) "cilium"'
+      tags: ["download", "charts"]
     - name: Pull public images to local tarballs
       command: '{{ default .rtkk_bin .rtkk_exe }} pull-images -i {{ default "configs/inventory.yaml" .inventory_file }} --images-file {{ default "configs/images.yaml" .images_file }} -l logs/pull-images.log'
+      tags: ["download", "images"]
     - name: Push image tars to private registry
       command: '{{ default .rtkk_bin .rtkk_exe }} push-images -i {{ default "configs/inventory.yaml" .inventory_file }} --images-file {{ default "configs/images.yaml" .images_file }} -l logs/push-images.log'
+      when: 'and (ne .push_to_registry false) (ne .push_to_registry "false")'
+      tags: ["push"]

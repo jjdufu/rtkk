@@ -56,7 +56,7 @@ pub(crate) async fn execute_fetch(
 
     if let Some(ref local_sha) = before_sha {
         let src_q = shell_single_quote(src);
-        let remote_sha_cmd = format!("sha256sum {src_q} 2>/dev/null");
+        let remote_sha_cmd = super::remote_fs::shell_sha256_cmd(&src_q);
         match connector.execute_shell(&remote_sha_cmd).await {
             Ok(remote_res) if remote_res.exit_code == 0 => {
                 let out_str = String::from_utf8_lossy(&remote_res.stdout);

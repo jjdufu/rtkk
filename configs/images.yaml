@@ -1,3 +1,4 @@
+{{- $cni := default "cilium" .cni_plugin -}}
 images:
   - name: kube-apiserver
     source: "registry.k8s.io/kube-apiserver:{{ .kube_version }}"
@@ -20,9 +21,18 @@ images:
   - name: pause
     source: "registry.k8s.io/pause:{{ .pause_version }}"
     target: "{{ .registry.url }}/pause:{{ .pause_version }}"
+{{- if .addons }}
+{{- if and (ne .addons.nodelocaldns false) (ne .addons.nodelocaldns "false") }}
   - name: k8s-dns-node-cache
     source: "registry.k8s.io/dns/k8s-dns-node-cache:{{ .nodelocaldns_version }}"
     target: "{{ .registry.url }}/k8s-dns-node-cache:{{ .nodelocaldns_version }}"
+{{- end }}
+{{- else }}
+  - name: k8s-dns-node-cache
+    source: "registry.k8s.io/dns/k8s-dns-node-cache:{{ .nodelocaldns_version }}"
+    target: "{{ .registry.url }}/k8s-dns-node-cache:{{ .nodelocaldns_version }}"
+{{- end }}
+{{- if eq $cni "cilium" }}
   - name: cilium
     source: "quay.io/cilium/cilium:{{ .cilium_version }}"
     target: "{{ .registry.url }}/cilium:{{ .cilium_version }}"
@@ -32,6 +42,22 @@ images:
   - name: cilium-envoy
     source: "quay.io/cilium/cilium-envoy:{{ .cilium_envoy_version }}"
     target: "{{ .registry.url }}/cilium-envoy:{{ .cilium_envoy_version }}"
+{{- end }}
+{{- if .addons }}
+{{- if and (ne .addons.openebs_localpv false) (ne .addons.openebs_localpv "false") }}
   - name: provisioner-localpv
     source: "docker.io/openebs/provisioner-localpv:{{ .openebs_version }}"
     target: "{{ .registry.url }}/provisioner-localpv:{{ .openebs_version }}"
+{{- end }}
+{{- else }}
+  - name: provisioner-localpv
+    source: "docker.io/openebs/provisioner-localpv:{{ .openebs_version }}"
+    target: "{{ .registry.url }}/provisioner-localpv:{{ .openebs_version }}"
+{{- end }}
+{{- if .extra_images }}
+{{- range .extra_images }}
+  - name: "{{ .name }}"
+    source: "{{ .source }}"
+    target: "{{ .target }}"
+{{- end }}
+{{- end }}

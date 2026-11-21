@@ -1,0 +1,9 @@
+- name: Ensure addons directory exists for NodeLocalDNS
+  command: "mkdir -p /etc/kubernetes/addons"
+- name: Render NodeLocalDNS manifest
+  template:
+    src: "templates/nodelocaldns.yaml.gtmpl"
+    dest: "/etc/kubernetes/addons/nodelocaldns.yaml"
+    mode: "0644"
+- name: Apply NodeLocalDNS manifest
+  shell: "kubectl apply -f /etc/kubernetes/addons/nodelocaldns.yaml"
