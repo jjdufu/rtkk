@@ -2,7 +2,7 @@
 
 RTKK 是用 **Rust** 编写的轻量级集群编排与配置管理工具（免 Python 的 Ansible 风格执行引擎）。它通过 SSH 或本机执行器在多节点并发运行 Playbook，并内置 **纯 Rust OCI Distribution v2 客户端**与 **X.509 PKI 签发引擎**，无需在控制机或目标节点预装 Python、Docker、crane 或 skopeo 即可完成二进制分发、镜像同步、证书签发与离线 Kubernetes 高可用集群部署。
 
-- **版本**：`0.0.2` <!-- x-release-please-version -->（`Cargo.toml` / `rtkk --version`）
+- **版本**：`0.0.3` <!-- x-release-please-version -->（`Cargo.toml` / `rtkk --version`）
 - **Rust 工具链**：`edition = "2024"`，`rust-version = "1.100.0"`
 - **安全与静态检查门禁**：Workspace 级 `unsafe_code = "forbid"`；`rustc`（`warnings`、`missing_docs`）与 `clippy`（`all`、`pedantic`、`missing_docs`、`missing_errors_doc`、`missing_panics_doc`、`allow_attributes`、`unwrap_used`、`expect_used`、`panic`、`as_conversions`、`indexing_slicing`）全部设为 **deny**，禁止通过 `#[allow]` 压制告警
 
