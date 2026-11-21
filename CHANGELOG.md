@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.3](https://github.com/jjdufu/rtkk/compare/v0.0.2...v0.0.3) (2026-11-21)
+
+
+### Features
+
+* **configs:** 升级 K8s 至 v1.37.2 生产版本矩阵并解耦可插拔 CNI/插件编排 ([169ce46](https://github.com/jjdufu/rtkk/commit/169ce46c54123a87f1994437c159a089d780f184))
+
 ## [0.0.2](https://github.com/jjdufu/rtkk/compare/v0.0.1...v0.0.2) (2026-11-13)
 
 
