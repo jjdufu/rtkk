@@ -9,6 +9,7 @@ pub(crate) mod cmd;
 pub(crate) mod copy;
 pub(crate) mod fetch;
 pub(crate) mod gen_cert;
+pub(crate) mod harbor;
 pub(crate) mod http;
 pub(crate) mod modprobe;
 pub(crate) mod outcome;
@@ -44,6 +45,8 @@ pub struct Task {
     pub sysctl: Option<Value>,
     /// Parameters for the `modprobe` kernel module loader.
     pub modprobe: Option<Value>,
+    /// Parameters for the `ensure_harbor_projects` `Harbor` project bootstrapper.
+    pub ensure_harbor_projects: Option<Value>,
     /// Variable name in which to store the task result.
     pub register: Option<String>,
     /// Optional format hint for parsing `stdout` when registering (`json`, `yaml`, `text`).
@@ -161,6 +164,7 @@ fn count_action_modules(task: &Task) -> usize {
         task.systemd.is_some(),
         task.sysctl.is_some(),
         task.modprobe.is_some(),
+        task.ensure_harbor_projects.is_some(),
     ]
     .iter()
     .filter(|x| **x)
@@ -217,6 +221,9 @@ pub async fn execute_task_module(
     if let Some(res) = modprobe::execute_modprobe(task, connector, &context).await? {
         return Ok(res);
     }
+    if let Some(res) = harbor::execute_ensure_harbor_projects(task, host_vars, &context).await? {
+        return Ok(res);
+    }
     Err(TaskModuleError::Message("unknown task module".to_string()))
 }
 
@@ -245,6 +252,7 @@ pub fn task_needs_hostvars(task: &Task) -> bool {
         || value_contains_hostvars(task.systemd.as_ref())
         || value_contains_hostvars(task.sysctl.as_ref())
         || value_contains_hostvars(task.modprobe.as_ref())
+        || value_contains_hostvars(task.ensure_harbor_projects.as_ref())
         || task
             .block
             .as_ref()

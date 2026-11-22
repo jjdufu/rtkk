@@ -165,6 +165,8 @@ pub fn inject_runtime_vars<S1, S2>(
         .ok()
         .map_or_else(|| "rtkk".to_string(), |p| p.to_string_lossy().into_owned());
     let default_hours_str = format!("{}h", crate::cert::DEFAULT_CERT_VALIDITY_HOURS);
+    let default_mirrors = serde_json::to_value(crate::registry::default_public_registry_mirrors())
+        .unwrap_or_else(|_| Value::Array(Vec::new()));
     for h_vars in host_vars.values_mut() {
         if is_unset_string_var(h_vars.get("inventory_file")) {
             h_vars.insert(
@@ -174,6 +176,15 @@ pub fn inject_runtime_vars<S1, S2>(
         }
         if is_unset_string_var(h_vars.get("rtkk_exe")) {
             h_vars.insert("rtkk_exe".to_string(), Value::String(exe_str.clone()));
+        }
+        if matches!(
+            h_vars.get("public_registry_mirrors"),
+            None | Some(Value::Null)
+        ) {
+            h_vars.insert(
+                "public_registry_mirrors".to_string(),
+                default_mirrors.clone(),
+            );
         }
         let hours_str = match h_vars.get("cert_validity") {
             None | Some(Value::Null) => default_hours_str.clone(),

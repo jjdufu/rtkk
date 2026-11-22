@@ -9,10 +9,15 @@ mod image_list;
 mod legacy_write;
 mod manifest;
 mod media;
+mod mirror;
 mod pull;
 mod tar;
 
 pub use image_list::{ImageSpec, ImageSyncConfig, SourceAuth};
+pub use mirror::{
+    HarborMirrorSyncOutcome, PublicRegistryMirror, default_public_registry_mirrors,
+    ensure_harbor_mirror_projects,
+};
 
 const fn default_true() -> bool {
     true

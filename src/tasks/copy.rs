@@ -103,11 +103,13 @@ pub(crate) async fn execute_copy(
         .ok_or_else(|| TaskModuleError::Message("copy: missing dest".to_string()))?;
     let mode = parse_file_mode(rendered.get("mode"), 0o644)?;
     let content_opt = rendered.get("content").and_then(Value::as_str);
-    let src_opt = rendered
+    let src_resolved = rendered
         .get("src")
         .and_then(Value::as_str)
-        .filter(|s| !s.trim().is_empty());
-    if content_opt.is_some() && src_opt.is_some() {
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(crate::utils::expand_tilde_path);
+    if content_opt.is_some() && src_resolved.is_some() {
         return Err(TaskModuleError::Message(
             "copy: cannot specify both content and src".to_string(),
         ));
@@ -116,8 +118,8 @@ pub(crate) async fn execute_copy(
         let mut hasher = sha2::Sha256::new();
         hasher.update(content.as_bytes());
         format!("{:x}", hasher.finalize())
-    } else if let Some(src) = src_opt {
-        sha256_local_file_streaming(Path::new(src)).await?
+    } else if let Some(ref src_path) = src_resolved {
+        sha256_local_file_streaming(src_path).await?
     } else {
         return Err(TaskModuleError::Message(
             "copy: must specify either content or src".to_string(),
@@ -158,8 +160,8 @@ pub(crate) async fn execute_copy(
         atomic_put_bytes(connector, content.as_bytes(), dest, mode)
             .await
             .map_err(TaskModuleError::from_connector)?;
-    } else if let Some(src) = src_opt {
-        atomic_put_local_path(connector, Path::new(src), dest, mode)
+    } else if let Some(ref src_path) = src_resolved {
+        atomic_put_local_path(connector, src_path, dest, mode)
             .await
             .map_err(TaskModuleError::from_connector)?;
     }
