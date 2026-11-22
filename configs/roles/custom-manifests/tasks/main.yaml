@@ -15,5 +15,7 @@
   with_items: "{{ .custom_manifests }}"
   when: 'not (regexMatch "\\.gtmpl$" .item)'
 - name: Apply custom manifests in configured order
-  shell: 'kubectl apply -f /etc/kubernetes/addons/custom-{{ trimSuffix ".gtmpl" (regexReplaceAll "^.*/" .item "") }}'
+  shell: 'kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f /etc/kubernetes/addons/custom-{{ trimSuffix ".gtmpl" (regexReplaceAll "^.*/" .item "") }}'
   with_items: "{{ .custom_manifests }}"
+  retries: 18
+  delay: 5

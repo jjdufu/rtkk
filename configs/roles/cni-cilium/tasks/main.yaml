@@ -47,4 +47,15 @@
 - name: Render Cilium manifest from offline Helm chart
   shell: 'helm template cilium /tmp/cilium-chart.tgz --namespace kube-system --kube-version {{ trimPrefix "v" (trimPrefix "V" .kube_version) }} -f /etc/kubernetes/addons/cilium-values.yaml > /etc/kubernetes/addons/cilium.yaml && chmod 0600 /etc/kubernetes/addons/cilium.yaml && rm -f /tmp/cilium-chart.tgz'
 - name: Apply Cilium manifest
-  shell: "kubectl apply -f /etc/kubernetes/addons/cilium.yaml"
+  shell: "kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f /etc/kubernetes/addons/cilium.yaml"
+- name: Wait for Cilium operator deployment rollout readiness
+  shell: "kubectl --kubeconfig=/etc/kubernetes/admin.conf -n kube-system rollout status deployment/cilium-operator --timeout=20s"
+  retries: 24
+  delay: 5
+  changed_when: "false"
+- name: Wait for Cilium CRDs to become established
+  shell: 'kubectl --kubeconfig=/etc/kubernetes/admin.conf wait --for=condition=Established --timeout=20s crd/ciliumnodes.cilium.io{{ if ne (printf "%v" (default false .cilium_l2_announcements)) "false" }} crd/ciliumloadbalancerippools.cilium.io crd/ciliuml2announcementpolicies.cilium.io{{ end }}'
+  when: 'or (ne (printf "%v" (default false .cilium_l2_announcements)) "false") (not (empty .custom_manifests))'
+  retries: 24
+  delay: 5
+  changed_when: "false"

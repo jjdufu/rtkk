@@ -26,7 +26,33 @@ ipam:
 
 routingMode: "tunnel"
 tunnelProtocol: "vxlan"
+{{- $kpr := ne (printf "%v" (default false .cilium_kube_proxy_replacement)) "false" }}
+{{- $l2 := ne (printf "%v" (default false .cilium_l2_announcements)) "false" }}
+{{- $extIps := ne (printf "%v" (default false .cilium_external_ips)) "false" }}
+{{- if or $kpr $l2 }}
+kubeProxyReplacement: "true"
+k8sServiceHost: "{{ if .cilium_k8s_service_host }}{{ .cilium_k8s_service_host }}{{ else }}{{ index (splitList ":" .control_plane_endpoint) 0 }}{{ end }}"
+k8sServicePort: {{ if .cilium_k8s_service_port }}{{ .cilium_k8s_service_port }}{{ else }}{{ index (splitList ":" .control_plane_endpoint) 1 }}{{ end }}
+{{- else }}
 kubeProxyReplacement: "false"
+{{- end }}
+{{- if $l2 }}
+l2announcements:
+  enabled: true
+  leaseDuration: '{{ default "15s" .cilium_l2_lease_duration }}'
+  leaseRenewDeadline: '{{ default "5s" .cilium_l2_lease_renew_deadline }}'
+  leaseRetryPeriod: '{{ default "2s" .cilium_l2_lease_retry_period }}'
+{{- end }}
+{{- if or $extIps $l2 }}
+externalIPs:
+  enabled: true
+{{- end }}
+{{- if not (empty .cilium_devices) }}
+devices:
+{{- range .cilium_devices }}
+  - "{{ . }}"
+{{- end }}
+{{- end }}
 
 hubble:
   enabled: true

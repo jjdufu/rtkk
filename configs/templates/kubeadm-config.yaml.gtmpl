@@ -16,8 +16,8 @@ imageRepository: {{ .registry.url }}
 dns:
   imageTag: {{ .coredns_version }}
 {{- end }}
-certificateValidityPeriod: {{ default "867240h" .cert_validity }}
-caCertificateValidityPeriod: {{ default "867240h" .cert_validity }}
+certificateValidityPeriod: {{ if .cert_validity_hours_str }}{{ .cert_validity_hours_str }}{{ else }}{{ default "867240h" .cert_validity }}{{ end }}
+caCertificateValidityPeriod: {{ if .cert_validity_hours_str }}{{ .cert_validity_hours_str }}{{ else }}{{ default "867240h" .cert_validity }}{{ end }}
 etcd:
   external:
     endpoints:

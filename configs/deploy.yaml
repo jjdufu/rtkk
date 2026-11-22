@@ -177,20 +177,34 @@
     - name: Write HTTPS hosts.toml for public registries
       copy:
         content: |
+          {{- $insecure := ne (printf "%v" (default false .public_registries_insecure)) "false" -}}
+          {{- $authEnabled := ne (printf "%v" (default false .public_registries_auth)) "false" -}}
+          {{- $authBasic := default "" (index . "registry" "auth_basic") -}}
+          {{- $useAuth := and $authEnabled (not (empty $authBasic)) -}}
+          {{- $rawMirror := default (default "" .public_registries_mirror) (index . "public_registries_mirrors" .item) -}}
+          {{- $primary := ternary (ternary $rawMirror (printf "https://%s" $rawMirror) (regexMatch "^https?://" $rawMirror)) (printf "https://%s" .item) (not (empty $rawMirror)) -}}
           server = "https://{{ .item }}"
-          {{- if and .public_registries_insecure (ne (printf "%v" .public_registries_insecure) "false") }}
-          [host."https://{{ .item }}"]
+          [host."{{ $primary }}"]
+            capabilities = ["pull", "resolve"]
+          {{- if $insecure }}
+            skip_verify = true
+          {{- end }}
+          {{- if $useAuth }}
+            [host."{{ $primary }}".header]
+              authorization = "Basic {{ $authBasic }}"
+          {{- end }}
+          {{- if and $insecure (regexMatch "^https://" $primary) }}
+          {{- $httpFallback := printf "http://%s" (trimPrefix "https://" $primary) }}
+          [host."{{ $httpFallback }}"]
             capabilities = ["pull", "resolve"]
             skip_verify = true
-          [host."http://{{ .item }}"]
-            capabilities = ["pull", "resolve"]
-            skip_verify = true
-          {{- else }}
-          [host."https://{{ .item }}"]
-            capabilities = ["pull", "resolve"]
+          {{- if $useAuth }}
+            [host."{{ $httpFallback }}".header]
+              authorization = "Basic {{ $authBasic }}"
+          {{- end }}
           {{- end }}
         dest: "/etc/containerd/certs.d/{{ .item }}/hosts.toml"
-        mode: "0644"
+        mode: "0600"
       with_items: "{{ .public_registries }}"
     - name: Write access-restricted hosts.toml for private registry
       copy:
