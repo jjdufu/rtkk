@@ -3,8 +3,8 @@
 //! quoted commas, and `Harbor` v2 project auto-creation (`harbor_project_public`).
 
 use rtkk::registry::{
-    PullImagesOptions, PushImagesBatchOptions, execute_pull_images, execute_push_images,
-    execute_push_images_batch,
+    ImageSpec, PullImagesOptions, PushImagesBatchOptions, execute_pull_images, execute_push_images,
+    execute_push_images_batch, execute_push_images_with_retag, inspect_local_image_tar,
 };
 use rtkk::utils::base64_encode;
 use serde_json::{Value, json};
@@ -786,6 +786,7 @@ async fn run_public_batch_push(root: &Path, port: u16) -> Result<(), String> {
         inventory_path: inv_pub.to_string_lossy().into_owned(),
         images_file: imgs_pub.to_string_lossy().into_owned(),
         output_dir: None,
+        retag: false,
     })
     .await
 }
@@ -845,4 +846,100 @@ async fn verify_harbor_push_records(state: &Arc<Mutex<MockRegistryState>>) -> Re
         "Docker v2 image must be pushed with Docker manifest v2 mediaType",
     )?;
     Ok(())
+}
+
+#[tokio::test]
+async fn cross_registry_offline_tar_batch_and_single_retag_push_succeed() -> Result<(), String> {
+    let dir = TestDir::new("cross-harbor-retag")?;
+    let state = Arc::new(Mutex::new(MockRegistryState {
+        expected_basic_header: format!("Basic {}", base64_encode(b"admin:harbor-secret")),
+        ..MockRegistryState::default()
+    }));
+    {
+        let mut st = state.lock().await;
+        seed_upstream_image(&mut st, "upstream/kube-apiserver:v1.37.2", false, false);
+    }
+    let port = spawn_mock_registry(Arc::clone(&state)).await?;
+
+    // Step 1: Pull offline tar on environment A where registry.url was "10.0.0.10/rtkk"
+    let out_offline = dir.path.join("downloads_images");
+    let inv_env_a = dir.path.join("inv_env_a.yaml");
+    std::fs::write(
+        &inv_env_a,
+        format!(
+            "vars:\n  registry:\n    url: \"10.0.0.10/rtkk\"\n    username: \"admin\"\n    password: \"change-me\"\n    insecure: true\n    scheme: \"http\"\n  image_sync:\n    output_dir: {:?}\n    platform: \"linux/amd64\"\n    insecure: true\nhosts:\n  n1: 10.0.0.61\n",
+            out_offline.to_string_lossy()
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    let imgs_file = dir.path.join("images.yaml");
+    std::fs::write(
+        &imgs_file,
+        format!(
+            "images:\n  - name: kube-apiserver\n    source: \"127.0.0.1:{port}/upstream/kube-apiserver:v1.37.2\"\n    target: \"{{{{ .registry.url }}}}/kube-apiserver:v1.37.2\"\n"
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+
+    execute_pull_images(&PullImagesOptions {
+        inventory_path: inv_env_a.to_string_lossy().into_owned(),
+        images_file: imgs_file.to_string_lossy().into_owned(),
+        output_dir: None,
+        platform: None,
+        force: true,
+        insecure: Some(true),
+    })
+    .await?;
+
+    // Step 2: Deliver the unmodified offline tar to environment B ("127.0.0.1:<port>/harbor-b")
+    let inv_env_b = dir.path.join("inv_env_b.yaml");
+    write_registry_inventory(&inv_env_b, port, "harbor-b", true, &out_offline)?;
+
+    let status_on_b = inspect_local_image_tar(
+        &out_offline.to_string_lossy(),
+        &ImageSpec {
+            name: "kube-apiserver".to_string(),
+            source: format!("127.0.0.1:{port}/upstream/kube-apiserver:v1.37.2"),
+            target: format!("127.0.0.1:{port}/harbor-b/kube-apiserver:v1.37.2"),
+        },
+    );
+    ensure(
+        status_on_b.exists && !status_on_b.repo_tags_matched && status_on_b.has_media_manifest,
+        &format!(
+            "cross-registry tar must report exists=true, repo_tags_matched=false, has_media_manifest=true; got {status_on_b:?}"
+        ),
+    )?;
+
+    // Batch push (--images-file) succeeds automatically without rewriting tar on disk
+    execute_push_images_batch(&PushImagesBatchOptions {
+        inventory_path: inv_env_b.to_string_lossy().into_owned(),
+        images_file: imgs_file.to_string_lossy().into_owned(),
+        output_dir: None,
+        retag: false,
+    })
+    .await?;
+
+    // Single-tar push with --retag succeeds against a third project ("harbor-c")
+    let inv_env_c = dir.path.join("inv_env_c.yaml");
+    write_registry_inventory(&inv_env_c, port, "harbor-c", true, &out_offline)?;
+    execute_push_images_with_retag(
+        &out_offline.join("kube-apiserver.tar").to_string_lossy(),
+        &inv_env_c.to_string_lossy(),
+        true,
+    )
+    .await?;
+
+    let st = state.lock().await;
+    ensure(
+        st.pushed_manifests
+            .iter()
+            .any(|m| m.repo == "harbor-b/kube-apiserver" && m.tag == "v1.37.2"),
+        "expected cross-registry batch push to land at harbor-b/kube-apiserver:v1.37.2",
+    )?;
+    ensure(
+        st.pushed_manifests
+            .iter()
+            .any(|m| m.repo == "harbor-c/kube-apiserver" && m.tag == "v1.37.2"),
+        "expected single-tar --retag push to land at harbor-c/kube-apiserver:v1.37.2",
+    )
 }

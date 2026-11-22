@@ -478,6 +478,7 @@ async fn push_images_xor_validation_and_prep_hosts_input_guards() -> Result<(), 
         inventory: "inv.yaml".to_string(),
         images_file: Some("images.yaml".to_string()),
         output_dir: None,
+        retag: false,
     };
     let Err(RtkkError::Registry(err_both)) = dispatch_command(both).await else {
         return Err("push-images with both tar and --images-file must fail".to_string());
@@ -492,6 +493,7 @@ async fn push_images_xor_validation_and_prep_hosts_input_guards() -> Result<(), 
         inventory: "inv.yaml".to_string(),
         images_file: None,
         output_dir: None,
+        retag: false,
     };
     let Err(RtkkError::Registry(err_neither)) = dispatch_command(neither).await else {
         return Err("push-images with neither tar nor --images-file must fail".to_string());
@@ -506,6 +508,7 @@ async fn push_images_xor_validation_and_prep_hosts_input_guards() -> Result<(), 
         inventory: "inv.yaml".to_string(),
         images_file: None,
         output_dir: Some("/tmp/out".to_string()),
+        retag: false,
     };
     let Err(RtkkError::Registry(err_out)) = dispatch_command(out_with_single).await else {
         return Err("push-images --output-dir with single tar must fail".to_string());
@@ -535,4 +538,93 @@ async fn push_images_xor_validation_and_prep_hosts_input_guards() -> Result<(), 
         "execute_prep_hosts must reject hostnames containing whitespace/newlines",
     )?;
     Ok(())
+}
+
+#[tokio::test]
+async fn tilde_expansion_cert_validity_normalization_and_retag_flag() -> Result<(), String> {
+    let dir = TestDir::new("tilde-validity-retag")?;
+    let inv_path = dir.path.join("inventory.yaml");
+    let inv_body = r#"vars:
+  ansible_user: "ops"
+  ansible_ssh_private_key_file: "~/.ssh/rtkk_ed25519"
+  ansible_ssh_known_hosts_file: "~/.ssh/custom_known_hosts"
+  ansible_become: true
+  ansible_become_method: "su"
+  ansible_become_pass: "change-me"
+  cert_validity: "100y"
+hosts:
+  m1: 10.0.0.61
+roles:
+  kube_control_plane: [m1]
+"#;
+    std::fs::write(&inv_path, inv_body).map_err(|e| e.to_string())?;
+    let loaded = load_inventory_with_overrides(&inv_path.to_string_lossy(), &[])
+        .await
+        .map_err(|e| e.to_string())?;
+    let tc = loaded.target_configs.get("m1").ok_or("missing m1 config")?;
+    let ssh = tc.ssh.as_ref().ok_or("missing ssh config on m1")?;
+    let pkey = ssh.private_key.as_deref().ok_or("missing private_key")?;
+    let kh = ssh
+        .known_hosts_file
+        .as_deref()
+        .ok_or("missing known_hosts_file")?;
+    ensure(
+        !pkey.starts_with('~') && pkey.ends_with("/.ssh/rtkk_ed25519"),
+        &format!("expected ~ expanded in private_key, got '{pkey}'"),
+    )?;
+    ensure(
+        !kh.starts_with('~') && kh.ends_with("/.ssh/custom_known_hosts"),
+        &format!("expected ~ expanded in known_hosts_file, got '{kh}'"),
+    )?;
+
+    let m1_vars = loaded.flat.host_vars.get("m1").ok_or("missing m1 vars")?;
+    let hours_str = m1_vars
+        .get("cert_validity_hours_str")
+        .and_then(serde_json::Value::as_str);
+    ensure(
+        hours_str == Some("876000h"),
+        &format!("expected cert_validity_hours_str == 876000h for 100y, got {hours_str:?}"),
+    )?;
+
+    let loaded_365d = load_inventory_with_overrides(
+        &inv_path.to_string_lossy(),
+        &[("cert_validity".to_string(), "365d".to_string())],
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let d365_hours = loaded_365d
+        .flat
+        .host_vars
+        .get("m1")
+        .and_then(|v| v.get("cert_validity_hours_str"))
+        .and_then(serde_json::Value::as_str);
+    ensure(
+        d365_hours == Some("8760h"),
+        &format!("expected 8760h for 365d, got {d365_hours:?}"),
+    )?;
+
+    ensure(
+        load_inventory_with_overrides(
+            &inv_path.to_string_lossy(),
+            &[("cert_validity".to_string(), "invalid-unit".to_string())],
+        )
+        .await
+        .is_err(),
+        "invalid cert_validity must be rejected during inventory loading",
+    )?;
+
+    let parsed = Cli::try_parse_from([
+        "rtkk",
+        "push-images",
+        "-i",
+        "inv.yaml",
+        "--images-file",
+        "images.yaml",
+        "--retag",
+    ])
+    .map_err(|e| e.to_string())?;
+    let Commands::PushImages { retag, .. } = parsed.command else {
+        return Err("expected PushImages variant".to_string());
+    };
+    ensure(retag, "expected --retag to parse as true")
 }
