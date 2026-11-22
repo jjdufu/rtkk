@@ -137,6 +137,24 @@ curl -fsSL -X PUT -u "${HARBOR_USER}:${HARBOR_PASS}" \
   "${HARBOR_URL}/api/v2.0/projects/${PROJECT_ID}"
 ```
 
+### 2.3 跨私库离线镜像包复用推送（`--retag` 与自动目标重映射）
+
+在“中心构建机一次拉取打包、多套隔离机房 Harbor 离线交付”场景下，`downloads/images/*.tar` 内部的 `manifest.json` `RepoTags` 记录的是打包阶段的私库前缀（例如 `10.0.0.10/rtkk/kube-apiserver:v1.37.2`），而现场环境的目标私库为新地址（例如 `192.168.26.3/rtkk`）：
+
+- **批量清单模式（`--images-file` / WebUI「推送私库」）**：`rtkk` 校验 tar 归档内 `Config` 与全部 `Layers` 文件完整性，只要镜像末级 `<name>:<tag>` 或 `rtkk-media.json` 中的 `source_ref` 与清单条目一致，即自动按当前 `vars.registry.url` 重映射目标标签完成推送，无需外部脚本解包重写 `manifest.json`。
+- **单包显式重标推送（`--retag`）**：单独推送跨私库离线 `.tar` 包时，传入 `--retag` 允许将单镜像归档直接重标并推送到指定 `--target`：
+
+  ```bash
+  # 批量推送跨环境离线镜像包（自动按当前 inventory 的 registry.url 重映射）
+  rtkk push-images -i configs/inventory.yaml --images-file configs/images.yaml --retag -l logs/push-images.log
+
+  # 单 tar 包跨私库重标推送
+  rtkk push-images -i configs/inventory.yaml \
+    --tar ./downloads/images/kube-apiserver_v1.37.2.tar \
+    --target 192.168.26.3/rtkk/kube-apiserver:v1.37.2 \
+    --retag
+  ```
+
 ---
 
 ## 3. Harbor Robot Account 最小权限实践（Debian 13）
@@ -269,6 +287,30 @@ server = "https://10.0.0.10"
   # 2) 使用 crictl 测试私有镜像拉取
   crictl pull 10.0.0.10/rtkk/pause:3.10
   ```
+
+### 4.3 公网镜像域名内网劫持、镜像源重定向与凭据附加
+
+内网隔离环境中常通过内部 DNS 将 `docker.io`（含 `index.docker.io` / `registry-1.docker.io`）、`quay.io`、`registry.k8s.io`、`gcr.io`、`ghcr.io` 解析至内网 Harbor，或通过 `containerd` Mirror 端点转发拉取请求，使第三方 Helm Chart 无需改写镜像前缀即可离线运行。`configs/deploy.yaml` 为 `public_registries` 列表中的每个域名生成 `/etc/containerd/certs.d/<domain>/hosts.toml`（强制 `mode: "0600"`），支持以下控制变量：
+
+```yaml
+vars:
+  public_registries:
+    - docker.io
+    - index.docker.io
+    - registry-1.docker.io
+    - quay.io
+    - registry.k8s.io
+    - gcr.io
+    - ghcr.io
+  # 域名劫持指向自签 HTTPS 私库时跳过证书校验
+  public_registries_insecure: true
+  # 域名劫持指向需要登录鉴权的私有 Harbor Proxy Cache 时附加 registry 凭据
+  public_registries_auth: true
+  # 可选：无需内网 DNS 劫持，直接按域名（或通过 default 全局回退）指定内网 Mirror 地址
+  public_registries_mirrors:
+    docker.io: "https://10.0.0.10/v2/dockerhub-proxy"
+    default: "https://10.0.0.10"
+```
 
 ---
 

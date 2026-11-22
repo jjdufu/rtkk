@@ -13,6 +13,7 @@
 - [3. 镜像仓库认证与 Harbor 项目可见性建议](#3-镜像仓库认证与-harbor-项目可见性建议)
 - [4. 内网 HTTP 镜像仓库与 TLS 加固建议](#4-内网-http-镜像仓库与-tls-加固建议)
 - [5. SSH Root 直连与非 Root `sudo`/`become` 提权建议](#5-ssh-root-直连与非-root-sudobecome-提权建议)
+- [6. Cilium KPR / L2 LoadBalancer VIP 与自定义 CRD 清单编排](#6-cilium-kpr--l2-loadbalancer-vip-与自定义-crd-清单编排)
 
 ---
 
@@ -192,3 +193,25 @@ printf '%s:%s' 'admin' '<STRONG_PASSWORD>' | base64 -w0 && echo
 - **默认开箱即用体验**：示例配置默认通过 Debian 13 的 `root` 账号建立 SSH 会话（推荐配合 Ed25519 密钥与 `sshd` 默认的 `PermitRootLogin prohibit-password`），直接完成内核参数、系统服务与 Kubernetes 组件安装；默认关闭 SSH 主机公钥强校验以便频繁重装测试机。
 - **进阶加固建议**：针对禁止 `root` 远程直接登录（`PermitRootLogin no`）的堡垒机或生产基线环境，`rtkk` 原生支持普通运维账号（如 `deploy`）登录并通过 `become` / `sudo`（免密 `NOPASSWD` 或 `ansible_become_pass` 密码提权）执行特权操作，同时支持 `ansible_ssh_host_key_checking: "accept-new"` 或 `"strict"`（配合 `ssh-keyscan` 预置 `~/.ssh/known_hosts`）防范中间人攻击。
 - **详细操作指南**：参阅 **[SSH 认证、非 Root 提权（become/sudo）与主机指纹校验指南](./docs/ssh-and-privilege-escalation.md)**。
+
+---
+
+## 6. Cilium KPR / L2 LoadBalancer VIP 与自定义 CRD 清单编排
+
+在无硬件负载均衡器的裸机或虚拟化多节点集群中，可通过 `configs/inventory.yaml` 启用 Cilium eBPF `kube-proxy` 替代（KPR）与二层 ARP/NDP LoadBalancer VIP 宣告，并在 `custom_manifests` 中下发地址池策略：
+
+```yaml
+vars:
+  cni_plugin: "cilium"
+  cilium_kube_proxy_replacement: true
+  cilium_l2_announcements: true
+  cilium_external_ips: true
+  # 可选：显式限定参与二层宣告的网卡列表（留空自动匹配默认路由网卡）
+  cilium_devices:
+    - ens192
+  custom_manifests:
+    - ./manifests/cilium-lb-ippool.yaml
+```
+
+- **自动对齐控制面接入端点**：开启 `cilium_kube_proxy_replacement` 或 `cilium_l2_announcements` 时，`configs/templates/cilium-values.yaml.gtmpl` 自动注入 `kubeProxyReplacement: "true"`、`k8sServiceHost: {{ .control_plane_endpoint_host }}` 与 `k8sServicePort: {{ .control_plane_endpoint_port }}`。
+- **CRD 注册竞态保护**：`cni-cilium` 角色在提交 Cilium 清单后自动等待 `cilium-operator` 滚动就绪及 `ciliumloadbalancerippools.cilium.io`、`ciliuml2announcementpolicies.cilium.io` 等 CRD 进入 `Established` 状态；`custom-manifests` 角色对每个清单额外执行幂等重试（`retries: 18`、`delay: 5`），确保依赖异步 CRD 的策略对象稳定落盘。
