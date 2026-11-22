@@ -219,6 +219,7 @@ svc_wait_healthy() {
 }
 
 svc_start() {
+  load_compose_env
   require_docker_compose
   bash "${COMPOSE_ROOT}/scripts/env.sh"
   compose_cmd up -d
