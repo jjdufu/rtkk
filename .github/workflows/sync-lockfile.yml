@@ -20,7 +20,7 @@ jobs:
           ref: ${{ github.head_ref }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Align Cargo.lock with package version
+      - name: Align Cargo.lock and compose .env with package version
         run: python3 .github/scripts/release/sync-workspace-lock-version.py
 
       - name: Commit
@@ -29,9 +29,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Cargo.lock
+          if [ -f deploy/compose/config/.env ]; then
+            git add deploy/compose/config/.env
+          fi
           if git diff --staged --quiet; then
-            echo "Cargo.lock unchanged"
+            echo "Cargo.lock and compose .env unchanged"
             exit 0
           fi
-          git commit -m "chore: sync Cargo.lock package version"
+          git commit -m "chore: sync Cargo.lock and compose .env package version"
           git push

@@ -43,6 +43,26 @@ def sync_lock(text: str, version: str) -> str:
     return "[[package]]".join(out)
 
 
+def sync_compose_env(version: str) -> bool:
+    env_path = ROOT / "deploy" / "compose" / "config" / ".env"
+    if not env_path.is_file():
+        return False
+    old = env_path.read_text(encoding="utf-8")
+    lines = []
+    for line in old.splitlines(keepends=True):
+        if line.startswith("RTKK_VERSION="):
+            nl = "\n" if line.endswith("\n") else ""
+            lines.append(f"RTKK_VERSION={version}{nl}")
+        else:
+            lines.append(line)
+    new = "".join(lines)
+    if new != old:
+        env_path.write_text(new, encoding="utf-8")
+        print(f"updated deploy/compose/config/.env RTKK_VERSION to {version}")
+        return True
+    return False
+
+
 def main() -> None:
     version = package_version()
     path = ROOT / "Cargo.lock"
@@ -53,6 +73,7 @@ def main() -> None:
         print(f"updated Cargo.lock package version to {version}")
     else:
         print(f"Cargo.lock already at {version}")
+    sync_compose_env(version)
 
 
 if __name__ == "__main__":
