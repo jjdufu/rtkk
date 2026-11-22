@@ -152,8 +152,8 @@ fn sync_registry_auth_basic(reg_obj: &mut Map<String, Value>) {
     }
 }
 
-/// Injects runtime variables (`inventory_file`, `rtkk_exe`, and `registry.auth_basic`)
-/// into every host's variable map prior to playbook execution.
+/// Injects runtime variables (`inventory_file`, `rtkk_exe`, `cert_validity_hours_str`,
+/// and `registry.auth_basic`) into every host's variable map prior to playbook execution.
 pub fn inject_runtime_vars<S1, S2>(
     host_vars: &mut HashMap<String, HashMap<String, Value, S2>, S1>,
     inventory_path: &str,
@@ -164,6 +164,7 @@ pub fn inject_runtime_vars<S1, S2>(
     let exe_str = std::env::current_exe()
         .ok()
         .map_or_else(|| "rtkk".to_string(), |p| p.to_string_lossy().into_owned());
+    let default_hours_str = format!("{}h", crate::cert::DEFAULT_CERT_VALIDITY_HOURS);
     for h_vars in host_vars.values_mut() {
         if is_unset_string_var(h_vars.get("inventory_file")) {
             h_vars.insert(
@@ -174,6 +175,16 @@ pub fn inject_runtime_vars<S1, S2>(
         if is_unset_string_var(h_vars.get("rtkk_exe")) {
             h_vars.insert("rtkk_exe".to_string(), Value::String(exe_str.clone()));
         }
+        let hours_str = match h_vars.get("cert_validity") {
+            None | Some(Value::Null) => default_hours_str.clone(),
+            Some(Value::String(s)) if s.trim().is_empty() => default_hours_str.clone(),
+            Some(val) => crate::cert::parse_duration_value(val)
+                .map_or_else(|_| default_hours_str.clone(), |h| format!("{h}h")),
+        };
+        h_vars.insert(
+            "cert_validity_hours_str".to_string(),
+            Value::String(hours_str),
+        );
         if let Some(Value::Object(reg_obj)) = h_vars.get_mut("registry") {
             sync_registry_auth_basic(reg_obj);
         }

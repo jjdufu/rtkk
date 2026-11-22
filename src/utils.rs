@@ -249,3 +249,34 @@ pub fn usize_to_f64(u: usize) -> f64 {
     let u64_val = u64::try_from(u).unwrap_or(0);
     u64_to_f64(u64_val)
 }
+
+/// Expands a leading `"~"` or `"~/..."` prefix against `$HOME` (falling back to `"/root"` when unset).
+///
+/// Strings that are neither `"~"` nor prefixed with `"~/"` are returned trimmed without modification.
+#[must_use]
+pub fn expand_tilde_str(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed == "~" {
+        return std::env::var("HOME")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "/root".to_string());
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        let home = std::env::var("HOME")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "/root".to_string());
+        return std::path::Path::new(&home)
+            .join(rest)
+            .to_string_lossy()
+            .into_owned();
+    }
+    trimmed.to_string()
+}
+
+/// Expands a leading `"~"` or `"~/..."` prefix into a [`std::path::PathBuf`].
+#[must_use]
+pub fn expand_tilde_path(raw: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(expand_tilde_str(raw))
+}

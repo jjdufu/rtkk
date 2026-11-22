@@ -53,4 +53,5 @@ pub fn register_functions(t: &mut gtmpl::Template) {
     t.add_func("semverCompare", misc::semver_compare_fn);
     t.add_func("tpl", misc::tpl_fn);
     t.add_func("include", misc::include_fn);
+    t.add_func("durationHours", misc::duration_hours_fn);
 }

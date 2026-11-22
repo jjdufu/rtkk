@@ -123,3 +123,35 @@ pub(super) fn include_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::F
         .map_err(|e| gtmpl::FuncError::Generic(format!("include '{tpl_name}' failed: {e}")))?;
     Ok(gtmpl::Value::String(res))
 }
+
+pub(super) fn duration_hours_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::FuncError> {
+    let Some(first) = args.first() else {
+        return Err(gtmpl::FuncError::AtLeastXArgs(
+            "durationHours".to_string(),
+            1,
+        ));
+    };
+    let hours = match first {
+        gtmpl::Value::String(s) => {
+            if s.trim().is_empty() {
+                crate::cert::DEFAULT_CERT_VALIDITY_HOURS
+            } else {
+                crate::cert::parse_duration_hours(s).map_err(gtmpl::FuncError::Generic)?
+            }
+        }
+        gtmpl::Value::Number(n) => {
+            let raw = n.as_u64().ok_or_else(|| {
+                gtmpl::FuncError::Generic("durationHours expects a positive integer".to_string())
+            })?;
+            crate::cert::parse_duration_hours(&raw.to_string())
+                .map_err(gtmpl::FuncError::Generic)?
+        }
+        gtmpl::Value::Nil | gtmpl::Value::NoValue => crate::cert::DEFAULT_CERT_VALIDITY_HOURS,
+        _ => {
+            return Err(gtmpl::FuncError::Generic(
+                "durationHours expects a duration string or integer hours".to_string(),
+            ));
+        }
+    };
+    Ok(gtmpl::Value::String(format!("{hours}h")))
+}

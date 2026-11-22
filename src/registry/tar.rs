@@ -64,16 +64,46 @@ fn parse_repo_tag_for_prefix(
     Some((domain.to_string(), repo_name, tag_name))
 }
 
-pub(super) fn extract_images_to_push(
-    tar_path: &str,
-    registry_url: &str,
-) -> Result<Vec<ImageToPush>, String> {
-    let normalized_prefix = normalize_registry_host_prefix(registry_url);
+fn leaf_repo_and_tag(ref_str: &str) -> Option<(&str, &str)> {
+    let clean = normalize_registry_host_prefix(ref_str);
+    let leaf_segment = match clean.rsplit_once('/') {
+        Some((_, tail)) => tail,
+        None => clean,
+    };
+    if leaf_segment.is_empty() {
+        return None;
+    }
+    let without_digest = match leaf_segment.split_once('@') {
+        Some((head, _)) => head,
+        None => leaf_segment,
+    };
+    match without_digest.rfind(':') {
+        Some(colon_idx) => {
+            let name = without_digest.get(..colon_idx)?;
+            let tag = without_digest.get(colon_idx + 1..)?;
+            if name.is_empty() || tag.is_empty() {
+                None
+            } else {
+                Some((name, tag))
+            }
+        }
+        None => Some((without_digest, "latest")),
+    }
+}
+
+struct ParsedTarMetadata {
+    manifest_entries: Vec<ManifestEntry>,
+    media_meta: Option<MediaMeta>,
+    member_paths: HashSet<String>,
+}
+
+fn read_tar_metadata_and_members(tar_path: &str) -> Result<ParsedTarMetadata, String> {
     let file = std::fs::File::open(tar_path)
         .map_err(|e| format!("failed to open tar file {tar_path}: {e}"))?;
     let mut archive = tar::Archive::new(file);
     let mut manifest_bytes = None;
     let mut media_bytes = None;
+    let mut member_paths = HashSet::new();
     for entry_res in archive
         .entries()
         .map_err(|e| format!("failed to read tar entries: {e}"))?
@@ -97,17 +127,33 @@ pub(super) fn extract_images_to_push(
                 .read_to_end(&mut buf)
                 .map_err(|e| format!("failed to read {MEDIA_META_NAME}: {e}"))?;
             media_bytes = Some(buf);
+        } else {
+            member_paths.insert(path_str);
         }
     }
     let manifest_bytes =
-        manifest_bytes.ok_or_else(|| "manifest.json not found in tar file".to_string())?;
+        manifest_bytes.ok_or_else(|| format!("manifest.json not found in tar file {tar_path}"))?;
     let manifest_entries: Vec<ManifestEntry> = serde_json::from_slice(&manifest_bytes)
-        .map_err(|e| format!("failed to parse manifest.json: {e}"))?;
+        .map_err(|e| format!("failed to parse manifest.json in {tar_path}: {e}"))?;
     let media_meta: Option<MediaMeta> = media_bytes
         .as_ref()
         .and_then(|b| serde_json::from_slice(b).ok());
+    Ok(ParsedTarMetadata {
+        manifest_entries,
+        media_meta,
+        member_paths,
+    })
+}
+
+pub(super) fn extract_images_to_push(
+    tar_path: &str,
+    registry_url: &str,
+    retag: bool,
+) -> Result<Vec<ImageToPush>, String> {
+    let normalized_prefix = normalize_registry_host_prefix(registry_url);
+    let parsed = read_tar_metadata_and_members(tar_path)?;
     let mut images_to_push = Vec::new();
-    for entry in manifest_entries {
+    for entry in parsed.manifest_entries {
         let clean_config = validate_tar_entry_path(Path::new(&entry.config))?;
         let mut clean_layers = Vec::with_capacity(entry.layers.len());
         for layer in &entry.layers {
@@ -115,12 +161,24 @@ pub(super) fn extract_images_to_push(
         }
         if let Some(ref tags) = entry.repo_tags {
             for tag in tags {
+                let effective_tag = if parse_repo_tag_for_prefix(tag, normalized_prefix).is_some() {
+                    tag.clone()
+                } else if retag && let Some((leaf_name, leaf_ver)) = leaf_repo_and_tag(tag) {
+                    format!("{normalized_prefix}/{leaf_name}:{leaf_ver}")
+                } else {
+                    continue;
+                };
                 if let Some((registry_domain, repo_name, tag_name)) =
-                    parse_repo_tag_for_prefix(tag, normalized_prefix)
+                    parse_repo_tag_for_prefix(&effective_tag, normalized_prefix)
                 {
                     let layer_media_types = clean_layers
                         .iter()
-                        .map(|lp| media_meta.as_ref().and_then(|m| m.layers.get(lp).cloned()))
+                        .map(|lp| {
+                            parsed
+                                .media_meta
+                                .as_ref()
+                                .and_then(|m| m.layers.get(lp).cloned())
+                        })
                         .collect();
                     images_to_push.push(ImageToPush {
                         config_path: clean_config.clone(),
@@ -128,7 +186,10 @@ pub(super) fn extract_images_to_push(
                         registry_domain,
                         repo_name,
                         tag_name,
-                        config_media_type: media_meta.as_ref().and_then(|m| m.config.clone()),
+                        config_media_type: parsed
+                            .media_meta
+                            .as_ref()
+                            .and_then(|m| m.config.clone()),
                         layer_media_types,
                     });
                 }
@@ -136,6 +197,116 @@ pub(super) fn extract_images_to_push(
         }
     }
     Ok(images_to_push)
+}
+
+pub(super) fn extract_spec_image_to_push(
+    tar_path: &str,
+    spec: &super::ImageSpec,
+    registry_url: &str,
+    force_retag: bool,
+) -> Result<Vec<ImageToPush>, String> {
+    if !Path::new(tar_path).is_file() {
+        return Err(format!(
+            "missing image tar for batch push: {tar_path} (expected target {})",
+            spec.target
+        ));
+    }
+    let normalized_prefix = normalize_registry_host_prefix(registry_url);
+    let (registry_domain, repo_name, tag_name) =
+        parse_repo_tag_for_prefix(&spec.target, normalized_prefix).ok_or_else(|| {
+            format!(
+                "image target '{}' does not match configured registry prefix '{normalized_prefix}'",
+                spec.target
+            )
+        })?;
+    let parsed = read_tar_metadata_and_members(tar_path)?;
+
+    let mut valid_entries: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
+    for entry in parsed.manifest_entries {
+        let clean_config = validate_tar_entry_path(Path::new(&entry.config))?;
+        if !parsed.member_paths.contains(&clean_config) {
+            return Err(format!(
+                "tar {tar_path} failed contract check: missing config blob '{clean_config}'"
+            ));
+        }
+        let mut clean_layers = Vec::with_capacity(entry.layers.len());
+        for layer in &entry.layers {
+            let clean_layer = validate_tar_entry_path(Path::new(layer))?;
+            if !parsed.member_paths.contains(&clean_layer) {
+                return Err(format!(
+                    "tar {tar_path} failed contract check: missing layer blob '{clean_layer}'"
+                ));
+            }
+            clean_layers.push(clean_layer);
+        }
+        valid_entries.push((
+            clean_config,
+            clean_layers,
+            entry.repo_tags.unwrap_or_default(),
+        ));
+    }
+    if valid_entries.is_empty() {
+        return Err(format!(
+            "tar {tar_path} failed contract check: manifest.json contains zero image entries"
+        ));
+    }
+
+    let want_leaf = leaf_repo_and_tag(&spec.target);
+    let media_source_matches = parsed
+        .media_meta
+        .as_ref()
+        .and_then(|m| m.source_ref.as_deref())
+        == Some(spec.source.as_str());
+
+    let selected = valid_entries
+        .iter()
+        .find(|(_, _, tags)| tags.iter().any(|t| t == &spec.target))
+        .or_else(|| {
+            valid_entries.iter().find(|(_, _, tags)| {
+                want_leaf.is_some() && tags.iter().any(|t| leaf_repo_and_tag(t) == want_leaf)
+            })
+        })
+        .or_else(|| {
+            if (media_source_matches || force_retag) && valid_entries.len() == 1 {
+                valid_entries.first()
+            } else {
+                None
+            }
+        });
+
+    let Some((config_path, layers, matched_tags)) = selected else {
+        return Err(format!(
+            "tar {tar_path} failed contract check: RepoTags did not match target '{}' (nor image:tag / source '{}' — pass --retag to force target remapping)",
+            spec.target, spec.source
+        ));
+    };
+
+    if !matched_tags.iter().any(|t| t == &spec.target) {
+        crate::log_println!(
+            "Retagging offline archive {tar_path} ({:?}) -> {}",
+            matched_tags,
+            spec.target
+        );
+    }
+
+    let layer_media_types = layers
+        .iter()
+        .map(|lp| {
+            parsed
+                .media_meta
+                .as_ref()
+                .and_then(|m| m.layers.get(lp).cloned())
+        })
+        .collect();
+    Ok(vec![ImageToPush {
+        config_path: config_path.clone(),
+        layers: layers.clone(),
+        registry_domain,
+        repo_name,
+        tag_name,
+        config_media_type: parsed.media_meta.as_ref().and_then(|m| m.config.clone()),
+        layer_media_types,
+    }])
 }
 
 pub(super) async fn upload_all_blobs(

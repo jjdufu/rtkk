@@ -211,6 +211,81 @@ pub(super) fn existing_tar_matches(
     Ok(false)
 }
 
+pub(super) fn has_valid_media_source(
+    tar_path: &Path,
+    expected_source: &str,
+) -> Result<bool, String> {
+    if !tar_path.is_file() {
+        return Ok(false);
+    }
+    let file = File::open(tar_path)
+        .map_err(|e| format!("failed to open existing tar {}: {e}", tar_path.display()))?;
+    let mut archive = tar::Archive::new(file);
+    let mut manifest_bytes = None;
+    let mut media_bytes = None;
+    let mut member_paths = HashSet::new();
+    for entry_res in archive
+        .entries()
+        .map_err(|e| format!("failed to read tar entries: {e}"))?
+    {
+        let mut entry = entry_res.map_err(|e| format!("failed to read tar entry: {e}"))?;
+        let path = {
+            let entry_path = entry
+                .path()
+                .map_err(|e| format!("failed to get entry path: {e}"))?;
+            validate_tar_entry_path(&entry_path)?
+        };
+        if path == "manifest.json" {
+            let mut buf = Vec::new();
+            entry
+                .read_to_end(&mut buf)
+                .map_err(|e| format!("failed to read manifest.json: {e}"))?;
+            manifest_bytes = Some(buf);
+        } else if path == MEDIA_META_NAME {
+            let mut buf = Vec::new();
+            entry
+                .read_to_end(&mut buf)
+                .map_err(|e| format!("failed to read {MEDIA_META_NAME}: {e}"))?;
+            media_bytes = Some(buf);
+        } else {
+            member_paths.insert(path);
+        }
+    }
+    let Some(raw_media) = media_bytes else {
+        return Ok(false);
+    };
+    let Ok(meta) = serde_json::from_slice::<MediaMeta>(&raw_media) else {
+        return Ok(false);
+    };
+    if meta.source_ref.as_deref() != Some(expected_source) {
+        return Ok(false);
+    }
+    let Some(raw_manifest) = manifest_bytes else {
+        return Ok(false);
+    };
+    let Ok(entries) = serde_json::from_slice::<Vec<ManifestEntry>>(&raw_manifest) else {
+        return Ok(false);
+    };
+    for entry in &entries {
+        let clean_config = validate_tar_entry_path(Path::new(&entry.config))?;
+        if !member_paths.contains(&clean_config) {
+            continue;
+        }
+        let mut layers_ok = true;
+        for layer in &entry.layers {
+            let clean_layer = validate_tar_entry_path(Path::new(layer))?;
+            if !member_paths.contains(&clean_layer) {
+                layers_ok = false;
+                break;
+            }
+        }
+        if layers_ok {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[must_use]
 pub(super) fn image_tar_path(output_dir: &str, name: &str) -> PathBuf {
     Path::new(output_dir).join(format!("{name}.tar"))

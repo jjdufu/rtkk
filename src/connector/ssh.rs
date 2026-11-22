@@ -35,13 +35,13 @@ fn default_identity_paths() -> Vec<PathBuf> {
 }
 
 fn resolve_known_hosts_path(custom: Option<&str>) -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
     if let Some(raw) = custom.map(str::trim).filter(|s| !s.is_empty()) {
-        if let Some(rest) = raw.strip_prefix("~/") {
-            return Path::new(&home).join(rest);
-        }
-        return PathBuf::from(raw);
+        return crate::utils::expand_tilde_path(raw);
     }
+    let home = std::env::var("HOME")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "/root".to_string());
     Path::new(&home).join(".ssh").join("known_hosts")
 }
 
@@ -153,15 +153,26 @@ async fn try_auth_pubkey_path(
     pkey_path: &str,
     fallback_password: bool,
 ) -> Result<(bool, bool), ConnectorError> {
-    if pkey_path.trim().is_empty() {
+    let trimmed = pkey_path.trim();
+    if trimmed.is_empty() {
         return Ok((false, false));
     }
-    let path = Path::new(pkey_path);
+    let path = crate::utils::expand_tilde_path(trimmed);
     if !path.exists() {
-        return Ok((false, false));
+        if fallback_password {
+            tracing::warn!(
+                "Configured SSH private key file {} (from '{trimmed}') not found, will try password fallback",
+                path.display()
+            );
+            return Ok((false, true));
+        }
+        return Err(ConnectorError::AuthenticationFailed(format!(
+            "Configured SSH private key file not found: {} (from '{trimmed}')",
+            path.display()
+        )));
     }
     match session
-        .userauth_pubkey_file(username, None, path, None)
+        .userauth_pubkey_file(username, None, &path, None)
         .await
     {
         Ok(()) => Ok((true, false)),
@@ -174,7 +185,8 @@ async fn try_auth_pubkey_path(
                 Ok((false, true))
             } else {
                 Err(ConnectorError::AuthenticationFailed(format!(
-                    "PrivateKey path auth failed: {e}"
+                    "PrivateKey path auth failed for {}: {e}",
+                    path.display()
                 )))
             }
         }

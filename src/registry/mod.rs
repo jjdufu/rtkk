@@ -64,7 +64,7 @@ pub struct PullImagesOptions {
 }
 
 /// CLI/API options for batch-pushing pre-pulled `.tar` archives from an output directory.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PushImagesBatchOptions {
     /// Path to the cluster `inventory.yaml` file.
     pub inventory_path: String,
@@ -72,6 +72,8 @@ pub struct PushImagesBatchOptions {
     pub images_file: String,
     /// Optional override for the directory containing `.tar` archives.
     pub output_dir: Option<String>,
+    /// Force retagging single-image `.tar` archives to match rendered `images.yaml` targets.
+    pub retag: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -116,11 +118,20 @@ fn build_http_client(
         .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(timeout_secs.max(1)));
     if let Some(ca_path) = ca_cert_file.map(str::trim).filter(|s| !s.is_empty()) {
-        let pem_bytes = std::fs::read(ca_path)
-            .map_err(|e| format!("failed to read CA certificate file {ca_path}: {e}"))?;
+        let resolved_ca = crate::utils::expand_tilde_path(ca_path);
+        let pem_bytes = std::fs::read(&resolved_ca).map_err(|e| {
+            format!(
+                "failed to read CA certificate file {} (from '{ca_path}'): {e}",
+                resolved_ca.display()
+            )
+        })?;
         for block in split_pem_certificates(&pem_bytes) {
-            let cert = reqwest::Certificate::from_pem(&block)
-                .map_err(|e| format!("failed to parse PEM certificate from {ca_path}: {e}"))?;
+            let cert = reqwest::Certificate::from_pem(&block).map_err(|e| {
+                format!(
+                    "failed to parse PEM certificate from {}: {e}",
+                    resolved_ca.display()
+                )
+            })?;
             builder = builder.add_root_certificate(cert);
         }
     }
@@ -142,13 +153,39 @@ fn empty_policy_from_registry(registry: &RegistryConfig) -> EmptyMatchPolicy {
     }
 }
 
+async fn push_extracted_images(
+    tar_path: &str,
+    images_to_push: &[manifest::ImageToPush],
+    registry: &RegistryConfig,
+    http_timeout_secs: u64,
+) -> Result<(), String> {
+    let http_client = build_http_client(
+        registry.insecure,
+        http_timeout_secs,
+        registry.ca_cert_file.as_deref(),
+    )?;
+    let domain = &images_to_push
+        .first()
+        .ok_or("no images to push")?
+        .registry_domain;
+    let base_url = client::probe_registry_base_url(&http_client, domain, registry).await?;
+    crate::log_println!("Using registry base URL: {base_url}");
+    let session = client::PushSession::new(&http_client, base_url, registry);
+    let (uploaded_files, _temp_guard) =
+        tar::upload_all_blobs(&session, tar_path, images_to_push).await?;
+    session
+        .push_manifests(images_to_push, &uploaded_files)
+        .await
+}
+
 async fn push_images_inner(
     tar_path: &str,
     registry: &RegistryConfig,
     empty_policy: EmptyMatchPolicy,
     http_timeout_secs: u64,
+    retag: bool,
 ) -> Result<(), String> {
-    let images_to_push = tar::extract_images_to_push(tar_path, &registry.url)?;
+    let images_to_push = tar::extract_images_to_push(tar_path, &registry.url, retag)?;
     if images_to_push.is_empty() {
         let reg_url = &registry.url;
         return match empty_policy {
@@ -163,23 +200,7 @@ async fn push_images_inner(
             )),
         };
     }
-    let http_client = build_http_client(
-        registry.insecure,
-        http_timeout_secs,
-        registry.ca_cert_file.as_deref(),
-    )?;
-    let domain = &images_to_push
-        .first()
-        .ok_or("no images to push")?
-        .registry_domain;
-    let base_url = client::probe_registry_base_url(&http_client, domain, registry).await?;
-    crate::log_println!("Using registry base URL: {base_url}");
-    let session = client::PushSession::new(&http_client, base_url, registry);
-    let (uploaded_files, _temp_guard) =
-        tar::upload_all_blobs(&session, tar_path, &images_to_push).await?;
-    session
-        .push_manifests(&images_to_push, &uploaded_files)
-        .await
+    push_extracted_images(tar_path, &images_to_push, registry, http_timeout_secs).await
 }
 
 async fn parse_inventory_doc(inventory_path: &str) -> Result<Value, String> {
@@ -202,12 +223,27 @@ async fn parse_registry_config(inventory_path: &str) -> Result<(RegistryConfig, 
 /// Returns an error if the inventory or tarball cannot be read, authentication fails, or any
 /// blob/manifest upload fails.
 pub async fn execute_push_images(tar_path: &str, inventory_path: &str) -> Result<(), String> {
+    execute_push_images_with_retag(tar_path, inventory_path, false).await
+}
+
+/// Pushes images inside a single `Docker`-save `.tar` archive to `inventory_path`'s registry,
+/// optionally rewriting mismatched `RepoTags` prefixes when `retag` is `true`.
+///
+/// # Errors
+///
+/// Returns an error if the inventory or tarball cannot be read, authentication fails, or any
+/// blob/manifest upload fails.
+pub async fn execute_push_images_with_retag(
+    tar_path: &str,
+    inventory_path: &str,
+    retag: bool,
+) -> Result<(), String> {
     let (registry, doc) = parse_registry_config(inventory_path).await?;
     let (_, sync) = image_list::extract_vars_and_sync(&doc)
         .unwrap_or_else(|_| (Value::Null, ImageSyncConfig::default()));
     let policy = empty_policy_from_registry(&registry);
     crate::log_println!("Starting pure-Rust HTTP API upload for {tar_path}...");
-    push_images_inner(tar_path, &registry, policy, sync.http_timeout_secs).await?;
+    push_images_inner(tar_path, &registry, policy, sync.http_timeout_secs, retag).await?;
     crate::log_println!("Successfully pushed images to registry.");
     Ok(())
 }
@@ -252,8 +288,7 @@ pub fn inspect_local_image_tar(output_dir: &str, spec: &ImageSpec) -> LocalImage
     let repo_tags_matched =
         legacy_write::existing_tar_matches(&path, &spec.target, None).unwrap_or(false);
     let has_media_manifest =
-        legacy_write::existing_tar_matches(&path, &spec.target, Some(&spec.source))
-            .unwrap_or(false);
+        legacy_write::has_valid_media_source(&path, &spec.source).unwrap_or(false);
     LocalImageTarStatus {
         path,
         exists: true,
@@ -541,7 +576,14 @@ pub async fn execute_push_images_filtered(
     }
     let all_specs = image_list::load_image_specs(&opts.images_file, &vars)?;
     let specs = filter_image_specs(all_specs, image_names)?;
-    push_specs_from_output_dir(&specs, &sync.output_dir, &registry, sync.http_timeout_secs).await?;
+    push_specs_from_output_dir(
+        &specs,
+        &sync.output_dir,
+        &registry,
+        sync.http_timeout_secs,
+        opts.retag,
+    )
+    .await?;
     crate::log_println!(
         "Successfully pushed {} image tar(s) to registry.",
         specs.len()
@@ -576,7 +618,14 @@ pub async fn execute_push_images_batch(opts: &PushImagesBatchOptions) -> Result<
         sync.output_dir.clone_from(d);
     }
     let specs = image_list::load_image_specs(&opts.images_file, &vars)?;
-    push_specs_from_output_dir(&specs, &sync.output_dir, &registry, sync.http_timeout_secs).await?;
+    push_specs_from_output_dir(
+        &specs,
+        &sync.output_dir,
+        &registry,
+        sync.http_timeout_secs,
+        opts.retag,
+    )
+    .await?;
     crate::log_println!(
         "Successfully pushed {} image tar(s) to registry.",
         specs.len()
@@ -589,44 +638,26 @@ async fn push_specs_from_output_dir(
     output_dir: &str,
     registry: &RegistryConfig,
     http_timeout_secs: u64,
+    force_retag: bool,
 ) -> Result<(), String> {
     for spec in specs {
         let tar_path = legacy_write::image_tar_path(output_dir, &spec.name);
-        ensure_tar_ready_for_batch(&tar_path, &spec.target)?;
         let tar_str = tar_path.to_string_lossy();
+        let images_to_push =
+            tar::extract_spec_image_to_push(tar_str.as_ref(), spec, &registry.url, force_retag)?;
         crate::log_println!(
             "Starting pure-Rust HTTP API upload for {tar_str} (target {})...",
             spec.target
         );
-        push_images_inner(
+        push_extracted_images(
             tar_str.as_ref(),
+            &images_to_push,
             registry,
-            EmptyMatchPolicy::Fail,
             http_timeout_secs,
         )
         .await?;
     }
     Ok(())
-}
-
-fn ensure_tar_ready_for_batch(tar_path: &Path, target_ref: &str) -> Result<(), String> {
-    if !tar_path.is_file() {
-        return Err(format!(
-            "missing image tar for batch push: {} (expected target {target_ref})",
-            tar_path.display()
-        ));
-    }
-    match legacy_write::existing_tar_matches(tar_path, target_ref, None) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(format!(
-            "tar {} failed contract check: RepoTags must include exact target '{target_ref}' and config/layers must be present",
-            tar_path.display()
-        )),
-        Err(e) => Err(format!(
-            "tar {} contract check error: {e}",
-            tar_path.display()
-        )),
-    }
 }
 
 /// Pulls all images listed in `opts.images_file` into local `Docker`-save `.tar` archives.
@@ -674,7 +705,14 @@ pub async fn execute_sync_images(opts: &PullImagesOptions) -> Result<(), String>
     }
     let specs = image_list::load_image_specs(&opts.images_file, &vars)?;
     pull_all_images(&specs, &sync, &registry, opts.force).await?;
-    push_specs_from_output_dir(&specs, &sync.output_dir, &registry, sync.http_timeout_secs).await?;
+    push_specs_from_output_dir(
+        &specs,
+        &sync.output_dir,
+        &registry,
+        sync.http_timeout_secs,
+        false,
+    )
+    .await?;
     crate::log_println!("Successfully synced {} image(s) to registry.", specs.len());
     Ok(())
 }
