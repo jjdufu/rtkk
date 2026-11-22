@@ -13,16 +13,22 @@ fi
 gate_init "vps-e2e"
 ensure_rtkk_bin
 
-cp "$RTKK_VPS_INVENTORY" "${GATE_WORK_DIR}/configs/inventory.yaml" 2>/dev/null || {
-  mkdir -p "${GATE_WORK_DIR}/configs"
-  cp "$RTKK_VPS_INVENTORY" "${GATE_WORK_DIR}/configs/inventory.yaml"
-}
+mkdir -p "${GATE_WORK_DIR}/configs"
+cp "$RTKK_VPS_INVENTORY" "${GATE_WORK_DIR}/configs/inventory.yaml"
+
+VPS_DOWNLOADS_SRC="${RTKK_VPS_DOWNLOADS_DIR:-${REPO_ROOT}/downloads}"
+if [[ -d "$VPS_DOWNLOADS_SRC" && ! -e "${GATE_WORK_DIR}/downloads" ]]; then
+  ln -s "$(cd "$VPS_DOWNLOADS_SRC" && pwd -P)" "${GATE_WORK_DIR}/downloads"
+fi
 
 TOKEN_FILE="${GATE_WORK_DIR}/.rtkk-daemon/admin.token"
-"$RTKK_BIN" -l "${GATE_TMP_DIR}/vps-daemon.log" serve \
-  --listen "$GATE_BIND_ADDR" \
-  --work-dir "$GATE_WORK_DIR" \
-  --token-file "$TOKEN_FILE" &
+(
+  cd "$GATE_WORK_DIR"
+  exec "$RTKK_BIN" -l "${GATE_TMP_DIR}/vps-daemon.log" serve \
+    --listen "$GATE_BIND_ADDR" \
+    --work-dir "$GATE_WORK_DIR" \
+    --token-file "$TOKEN_FILE"
+) &
 DAEMON_PID=$!
 gate_register_pid "$DAEMON_PID"
 
