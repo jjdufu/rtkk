@@ -1034,3 +1034,234 @@ fn public_registries_hijack_hosts_toml() -> Result<(), String> {
         &format!("hijack public hosts.toml must render dual-stack skip_verify: {hijack_out}"),
     )
 }
+
+const HA_3M_10W_INVENTORY: &str = r#"vars:
+  ansible_user: "deploy"
+  ansible_ssh_private_key_file: "~/.ssh/rtkk_ed25519"
+  ansible_become: true
+  ansible_become_method: "su"
+  ansible_become_pass: "change-me"
+  registry:
+    url: "192.168.26.3/rtkk"
+    host: "192.168.26.3"
+    username: "admin"
+    password: "change-me"
+    insecure: true
+    scheme: "https"
+  cert_validity: "100y"
+  kube_version: "v1.37.2"
+  etcd_version: "v3.7.4"
+  containerd_version: "2.4.2"
+  runc_version: "v1.5.3"
+  cni_version: "v1.10.0"
+  helm_version: "v4.3.2"
+  control_plane_endpoint: "192.168.26.68:6443"
+  vip_interface: "ens18"
+  pod_subnet: "10.233.0.0/18"
+  service_subnet: "10.233.64.0/18"
+  cluster_dns_ip: "10.233.64.10"
+  cluster_domain: "cluster.local"
+  cluster_pool_mask_size: "24"
+  nodelocaldns_ip: "169.254.20.10"
+  public_registries_insecure: true
+  public_registries_auth: true
+  public_registries_mirrors:
+    docker.io: "https://192.168.26.3"
+  public_registries:
+    - docker.io
+    - index.docker.io
+    - registry.k8s.io
+    - quay.io
+  coredns_version: "v1.14.6"
+  kube_vip_version: "v1.3.2"
+  pause_version: "3.10.2"
+  nodelocaldns_version: "1.27.1"
+  cilium_version: "v1.20.5"
+  cilium_envoy_version: "v1.39.6"
+  openebs_version: "4.6.0"
+  cni_plugin: "cilium"
+  cilium_kube_proxy_replacement: true
+  cilium_l2_announcements: true
+  cilium_devices: ["ens18"]
+  addons:
+    nodelocaldns: true
+    openebs_localpv: true
+  custom_manifests:
+    - "configs/l2-pool.yaml"
+hosts:
+  m1: 192.168.26.61
+  m2: 192.168.26.62
+  m3: 192.168.26.63
+  w01: 192.168.26.71
+  w02: 192.168.26.72
+  w03: 192.168.26.73
+  w04: 192.168.26.74
+  w05: 192.168.26.75
+  w06: 192.168.26.76
+  w07: 192.168.26.77
+  w08: 192.168.26.78
+  w09: 192.168.26.79
+  w10: 192.168.26.80
+roles:
+  kube_control_plane: [m1, m2, m3]
+  kube_node: [w01, w02, w03, w04, w05, w06, w07, w08, w09, w10]
+  etcd: [m1, m2, m3]
+  k8s_cluster: [kube_control_plane, kube_node]
+"#;
+
+fn verify_play4_short_circuit_conditions(
+    pb: &rtkk::playbook::Playbook,
+    m1_ctx: &Value,
+    m2_ctx: &Value,
+) -> Result<(), String> {
+    for play in &pb.0 {
+        if play
+            .name
+            .as_deref()
+            .is_some_and(|n| n.contains("Play 4 - Deploy Kubernetes Control Plane"))
+            && let Some(ref tasks) = play.tasks
+        {
+            for t in tasks {
+                if let Some(ref cond) = t.when {
+                    let r1 = eval_condition(cond, m1_ctx).map_err(|e| {
+                        format!(
+                            "Play 4 task {:?} failed on m1 (missing secondary_cp_joined): {e}",
+                            t.name
+                        )
+                    })?;
+                    let r2 = eval_condition(cond, m2_ctx).map_err(|e| {
+                        format!(
+                            "Play 4 task {:?} failed on m2 (missing first_cp_initialized): {e}",
+                            t.name
+                        )
+                    })?;
+                    if t.name
+                        .as_deref()
+                        .is_some_and(|n| n.contains("Initialize first Kubernetes control plane"))
+                    {
+                        ensure(r1 && !r2, "kubeadm init must run on m1 and skip on m2")?;
+                    }
+                    if t.name
+                        .as_deref()
+                        .is_some_and(|n| n.contains("Join secondary control plane nodes"))
+                    {
+                        ensure(
+                            !r1 && r2,
+                            "secondary control plane join must skip on m1 and run on m2",
+                        )?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn verify_public_registries_mirror_and_auth(
+    pb: &rtkk::playbook::Playbook,
+    base_ctx: &Value,
+) -> Result<(), String> {
+    let mut pub_task_mode = None;
+    let mut pub_task_tmpl = None;
+    for play in &pb.0 {
+        if let Some(ref tasks) = play.tasks {
+            for t in tasks {
+                if t.name
+                    .as_deref()
+                    .is_some_and(|n| n.contains("hosts.toml for public registries"))
+                    && let Some(ref c) = t.copy
+                {
+                    pub_task_mode = c.get("mode").and_then(Value::as_str).map(str::to_string);
+                    pub_task_tmpl = c.get("content").and_then(Value::as_str).map(str::to_string);
+                }
+            }
+        }
+    }
+    ensure(
+        pub_task_mode.as_deref() == Some("0600"),
+        &format!("public registries hosts.toml must use mode 0600, got {pub_task_mode:?}"),
+    )?;
+    let pub_tmpl = pub_task_tmpl.ok_or("missing public hosts.toml template")?;
+    let mut mirror_ctx = base_ctx.clone();
+    if let Some(obj) = mirror_ctx.as_object_mut() {
+        obj.insert("item".to_string(), json!("docker.io"));
+    }
+    let mirror_toml = render_template_string(&pub_tmpl, &json_to_gtmpl(&mirror_ctx))?;
+    ensure(
+        mirror_toml.contains("[host.\"https://192.168.26.3\"]")
+            && mirror_toml.contains("skip_verify = true")
+            && mirror_toml.contains("authorization = \"Basic YWRtaW46Y2hhbmdlLW1l\""),
+        &format!("public_registries mirror+auth hosts.toml unexpected:\n{mirror_toml}"),
+    )
+}
+
+#[test]
+fn ha_3master_10worker_su_cilium_l2_cert100y_and_public_mirrors_regression() -> Result<(), String> {
+    let base_inv = load_base_inventory()?;
+    let base_pub_regs = base_inv
+        .vars
+        .as_ref()
+        .and_then(|v| v.get("public_registries"))
+        .and_then(Value::as_array)
+        .ok_or("missing vars.public_registries in configs/inventory.yaml")?;
+    ensure(
+        base_pub_regs
+            .iter()
+            .any(|v| v.as_str() == Some("index.docker.io")),
+        "configs/inventory.yaml public_registries must include index.docker.io",
+    )?;
+
+    let inv: Inventory = serde_yml::from_str(HA_3M_10W_INVENTORY).map_err(|e| e.to_string())?;
+    let flat = finalize_flat_inventory(&inv)?;
+    let pb = compile_playbook(&configs_dir().join("deploy.yaml"))?;
+
+    let mut m1_ctx = host_context_json(&flat, "m1")?;
+    if let Some(obj) = m1_ctx.as_object_mut() {
+        obj.insert("inventory_hostname".to_string(), json!("m1"));
+        obj.insert(
+            "first_cp_initialized".to_string(),
+            json!({ "stdout": "false" }),
+        );
+    }
+    let mut m2_ctx = host_context_json(&flat, "m2")?;
+    if let Some(obj) = m2_ctx.as_object_mut() {
+        obj.insert("inventory_hostname".to_string(), json!("m2"));
+        obj.insert(
+            "secondary_cp_joined".to_string(),
+            json!({ "stdout": "false" }),
+        );
+    }
+    verify_play4_short_circuit_conditions(&pb, &m1_ctx, &m2_ctx)?;
+
+    let rendered = render_and_validate_all_templates(&flat, "m1", "m1")?;
+    let kubeadm_docs = parse_multi_doc_yaml(
+        "kubeadm-100y",
+        rendered
+            .get("kubeadm-config.yaml.gtmpl")
+            .ok_or("missing kubeadm render")?,
+    )?;
+    check_cluster_config_cert_validity(&kubeadm_docs, "876000h")?;
+
+    let mut m1_365d = m1_ctx.clone();
+    if let Some(obj) = m1_365d.as_object_mut() {
+        obj.insert("cert_validity".to_string(), json!("365d"));
+    }
+    let kubeadm_365d = render_config_template("templates/kubeadm-config.yaml.gtmpl", &m1_365d)?;
+    let docs_365d = parse_multi_doc_yaml("kubeadm-365d", &kubeadm_365d)?;
+    check_cluster_config_cert_validity(&docs_365d, "8760h")?;
+
+    let cilium_yaml = rendered
+        .get("cilium-values.yaml.gtmpl")
+        .ok_or("missing cilium render")?;
+    ensure(
+        cilium_yaml.contains("kubeProxyReplacement: \"true\"")
+            && cilium_yaml.contains("k8sServiceHost: \"192.168.26.68\"")
+            && cilium_yaml.contains("k8sServicePort: 6443")
+            && cilium_yaml.contains("l2announcements:")
+            && cilium_yaml.contains("externalIPs:")
+            && cilium_yaml.contains("ens18"),
+        &format!("Cilium L2/KPR values missing expected fields:\n{cilium_yaml}"),
+    )?;
+
+    verify_public_registries_mirror_and_auth(&pb, &m1_ctx)
+}
