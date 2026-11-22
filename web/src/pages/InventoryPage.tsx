@@ -73,6 +73,21 @@ const VALIDITY_OPTIONS: readonly SelectOption[] = [
   { value: "8760h", label: "1 年 (8760h)" },
 ];
 
+const DEFAULT_PUBLIC_REGISTRY_MIRRORS: ReadonlyArray<{ readonly host: string; readonly project: string }> = [
+  { host: "docker.io", project: "dockerhub" },
+  { host: "registry-1.docker.io", project: "dockerhub" },
+  { host: "index.docker.io", project: "dockerhub" },
+  { host: "registry.k8s.io", project: "k8s" },
+  { host: "quay.io", project: "quay" },
+  { host: "gcr.io", project: "gcr" },
+  { host: "k8s.gcr.io", project: "gcr" },
+  { host: "ghcr.io", project: "ghcr" },
+  { host: "mcr.microsoft.com", project: "mcr" },
+  { host: "public.ecr.aws", project: "ecr-public" },
+  { host: "nvcr.io", project: "nvcr" },
+  { host: "registry.gitlab.com", project: "gitlab" },
+];
+
 function asRecord(val: unknown): Record<string, unknown> {
   if (typeof val === "object" && val !== null && !Array.isArray(val)) {
     return val as Record<string, unknown>;
@@ -971,6 +986,42 @@ export function InventoryPage() {
                   </div>
 
                   <div className="park-card p-5 space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div data-testid="enable-public-registry-mirrors-box">
+                        <Switch
+                          checked={asBool(varsRec["enable_public_registry_mirrors"], false)}
+                          onChange={(checked) => {
+                            setInventoryDoc((prev) => {
+                              const next = cloneDeepRecord(prev);
+                              const nextVars = asRecord(next["vars"]);
+                              nextVars["enable_public_registry_mirrors"] = checked;
+                              if (checked && !Array.isArray(nextVars["public_registry_mirrors"])) {
+                                nextVars["public_registry_mirrors"] = DEFAULT_PUBLIC_REGISTRY_MIRRORS.map(
+                                  (item) => ({ ...item }),
+                                );
+                              }
+                              if (checked && nextVars["auto_create_mirror_projects"] === undefined) {
+                                nextVars["auto_create_mirror_projects"] = true;
+                              }
+                              next["vars"] = nextVars;
+                              return next;
+                            });
+                            setEditMode("structured");
+                          }}
+                          label="公网源透明映射"
+                          description="启用 containerd override_path 按源站映射至私库项目"
+                        />
+                      </div>
+                      <div data-testid="auto-create-mirror-projects-box">
+                        <Switch
+                          checked={asBool(varsRec["auto_create_mirror_projects"], true)}
+                          onChange={(checked) => updateVarField("auto_create_mirror_projects", checked)}
+                          label="自动建映射项目"
+                          description="部署时在 Harbor 自动创建去重源站项目"
+                        />
+                      </div>
+                    </div>
+
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div data-testid="public-registries-insecure-box">
                         <Switch
