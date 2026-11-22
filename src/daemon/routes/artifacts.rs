@@ -140,6 +140,9 @@ pub struct RegistryPushRequest {
     /// Optional subset of `ImageSpec.name` entries (empty pushes all).
     #[serde(default)]
     pub image_names: Vec<String>,
+    /// Allow remapping single-entry offline `.tar` archives to current `images.yaml` targets.
+    #[serde(default)]
+    pub retag: bool,
 }
 
 fn inspect_file(path: &Path) -> (bool, u64, Option<u64>) {
@@ -434,17 +437,20 @@ pub async fn post_registry_ping(
 
     let mut reg_cfg: RegistryConfig = serde_json::from_value(reg_val)
         .map_err(|e| ApiError::invalid_argument(format!("Invalid registry config: {e}")))?;
-    if let Some(ref ca) = reg_cfg.ca_cert_file
-        && Path::new(ca).is_relative()
-    {
-        reg_cfg.ca_cert_file = Some(
-            state
-                .workspace()
-                .root()
-                .join(ca)
-                .to_string_lossy()
-                .into_owned(),
-        );
+    if let Some(ref ca) = reg_cfg.ca_cert_file {
+        let expanded = crate::utils::expand_tilde_str(ca);
+        if Path::new(&expanded).is_relative() {
+            reg_cfg.ca_cert_file = Some(
+                state
+                    .workspace()
+                    .root()
+                    .join(expanded)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        } else {
+            reg_cfg.ca_cert_file = Some(expanded);
+        }
     }
 
     let report = ping_registry_endpoint(&reg_cfg).await;
@@ -513,6 +519,7 @@ pub async fn post_registry_push(
     }
     let ws = state.workspace().clone();
     let names = req.image_names;
+    let retag = req.retag;
     let summary = state.jobs().spawn_job(
         "registry_push",
         "Push OCI container images to private registry",
@@ -522,6 +529,7 @@ pub async fn post_registry_push(
                 inventory_path: ws.inventory_path().to_string_lossy().into_owned(),
                 images_file: ws.images_path().to_string_lossy().into_owned(),
                 output_dir: Some(ws.downloads_images_dir().to_string_lossy().into_owned()),
+                retag,
             };
             execute_push_images_filtered(&opts, &names).await
         },

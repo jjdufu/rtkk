@@ -191,6 +191,30 @@ fn parse_and_resolve_candidate(
         .map_err(|e| ApiError::invalid_argument(e.to_string()))?;
 
     let mut warnings = Vec::new();
+    for (hname, hvars) in &flat.host_vars {
+        if let Some(cv) = hvars.get("cert_validity")
+            && !cv.is_null()
+            && cv.as_str().is_none_or(|s| !s.trim().is_empty())
+        {
+            crate::cert::parse_duration_value(cv).map_err(|e| {
+                ApiError::invalid_argument(format!("Invalid cert_validity on host '{hname}': {e}"))
+            })?;
+        }
+        if let Some(pk_raw) = hvars
+            .get("ansible_ssh_private_key_file")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let resolved = crate::utils::expand_tilde_path(pk_raw);
+            if !resolved.exists() {
+                warnings.push(format!(
+                    "Host '{hname}' SSH private key file not found on Daemon host: {} (from '{pk_raw}')",
+                    resolved.display()
+                ));
+            }
+        }
+    }
     if flat
         .groups
         .get("kube_control_plane")
