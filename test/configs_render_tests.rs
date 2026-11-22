@@ -740,3 +740,73 @@ fn deploy_playbook_compiles_pluggable_addon_roles_and_evaluates_conditions() -> 
         "toggling cni_plugin=none, openebs_localpv=false, and custom_manifests must flip role conditions",
     )
 }
+
+#[test]
+fn deploy_hosts_sync_task_preserves_existing_prep_hosts_block() -> Result<(), String> {
+    let pb = compile_playbook(&configs_dir().join("deploy.yaml"))?;
+    let play1 =
+        pb.0.iter()
+            .find(|p| p.name.as_deref().is_some_and(|n| n.contains("Play 1")))
+            .ok_or("missing Play 1 in deploy.yaml")?;
+    let hosts_task = play1
+        .tasks
+        .as_ref()
+        .and_then(|tasks| {
+            tasks
+                .iter()
+                .find(|t| t.name.as_deref().is_some_and(|n| n.contains("/etc/hosts")))
+        })
+        .ok_or("missing /etc/hosts task in Play 1")?;
+    let raw_script = hosts_task
+        .shell
+        .as_ref()
+        .and_then(Value::as_str)
+        .ok_or("expected shell string on /etc/hosts task")?;
+
+    let inv = load_base_inventory()?;
+    let flat = finalize_flat_inventory(&inv)?;
+    let mut cp1 = host_context_json(&flat, "c23-p61")?;
+    let mut hostvars_map = serde_json::Map::new();
+    for (h, hv) in &flat.host_vars {
+        let val = serde_json::to_value(hv).map_err(|e| e.to_string())?;
+        hostvars_map.insert(h.clone(), val);
+    }
+    if let Some(obj) = cp1.as_object_mut() {
+        obj.insert("hostvars".to_string(), Value::Object(hostvars_map));
+    }
+
+    let rendered = render_template_string(raw_script, &json_to_gtmpl(&cp1))?;
+    let tmp_hosts = std::env::temp_dir().join(format!("rtkk_hosts_guard_{}", std::process::id()));
+    let sandbox_script = rendered
+        .replace("/etc/hosts", &tmp_hosts.to_string_lossy())
+        .replace(
+            "/tmp/.rtkk_deploy_hosts",
+            &format!("{}.tmp", tmp_hosts.display()),
+        );
+
+    let prepared = "127.0.0.1 localhost\n# RTKK HOSTS START\n10.0.0.61 c23-p61 os-host-p61\n# RTKK HOSTS END\n";
+    std::fs::write(&tmp_hosts, prepared).map_err(|e| e.to_string())?;
+    let st1 = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(&sandbox_script)
+        .status()
+        .map_err(|e| e.to_string())?;
+    let after_prepared = std::fs::read_to_string(&tmp_hosts).map_err(|e| e.to_string())?;
+    ensure(
+        st1.success() && after_prepared.contains("os-host-p61"),
+        "deploy.yaml must preserve OS hostname entries written by `rtkk prep hosts`",
+    )?;
+
+    std::fs::write(&tmp_hosts, "127.0.0.1 localhost\n").map_err(|e| e.to_string())?;
+    let st2 = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(&sandbox_script)
+        .status()
+        .map_err(|e| e.to_string())?;
+    let after_bare = std::fs::read_to_string(&tmp_hosts).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&tmp_hosts);
+    ensure(
+        st2.success() && after_bare.contains("10.0.0.61 c23-p61"),
+        "deploy.yaml must populate fallback /etc/hosts block when prep hosts has not run",
+    )
+}

@@ -80,16 +80,47 @@ pub enum HostKeyPolicy {
     Strict,
 }
 
-/// Privilege escalation (`sudo` / `become`) configuration for a target host.
+/// Mechanism used to escalate from an unprivileged login user to `become_user`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BecomeMethod {
+    /// Escalate via `sudo` (`sudo -S` with user password or `sudo -n` passwordless).
+    #[default]
+    Sudo,
+    /// Escalate via `su` over a `PTY` using the target account's (`root`) password.
+    Su,
+}
+
+impl BecomeMethod {
+    /// Parses a privilege escalation method name (`"sudo"` or `"su"`, case-insensitive).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if `raw` is neither `"sudo"` nor `"su"`.
+    pub fn parse_str(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "sudo" => Ok(Self::Sudo),
+            "su" => Ok(Self::Su),
+            other => Err(format!(
+                "unsupported become_method '{other}'; expected 'sudo' or 'su'"
+            )),
+        }
+    }
+}
+
+/// Privilege escalation (`sudo` / `su` / `become`) configuration for a target host.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PrivilegeConfig {
     /// Whether privilege escalation is enabled.
     #[serde(default)]
     pub become_enabled: bool,
+    /// Mechanism used for privilege escalation (`sudo` by default, or `su`).
+    #[serde(default)]
+    pub become_method: BecomeMethod,
     /// Target account to escalate into (defaults to `"root"` when `None`).
     #[serde(default)]
     pub become_user: Option<String>,
-    /// Optional password sent to `sudo` via standard input.
+    /// Optional password sent to `sudo` (login user password) or `su` (target user password).
     #[serde(default)]
     pub become_password: Option<String>,
 }
@@ -352,6 +383,158 @@ pub(crate) fn build_sudo_shell_cmd(
     }
 }
 
+/// Framed command specification for `su` privilege escalation over a `PTY`.
+pub(crate) struct SuFrameSpec {
+    /// Complete outer shell command invoking `LC_ALL=C su`.
+    pub cmd: String,
+    /// Unique marker printed right before `inner_cmd` `stdout` begins.
+    pub start_marker: String,
+    /// Unique marker printed between `inner_cmd` `stdout` and captured `stderr`.
+    pub err_marker: String,
+}
+
+/// Builds a `PTY`-safe `su` command that normalizes `HOME`/`PATH`, detaches inner `stdin`,
+/// and frames `stdout` and `stderr` with unique boundary markers.
+pub(crate) fn build_su_shell_cmd(target_user: &str, inner_cmd: &str) -> SuFrameSpec {
+    let (pid, rand_id) = unique_tmp_id();
+    let start_marker = format!("__RTKK_SU_START_{pid}_{rand_id:016x}__");
+    let err_marker = format!("__RTKK_SU_ERR_{pid}_{rand_id:016x}__");
+    let err_file = format!("/tmp/.rtkk_su_err_{pid}_{rand_id:016x}");
+
+    let user_q = crate::utils::shell_single_quote(target_user);
+    let inner_q = crate::utils::shell_single_quote(inner_cmd);
+    let err_q = crate::utils::shell_single_quote(&err_file);
+
+    let payload = format!(
+        "export PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'; \
+         export USER={user_q} LOGNAME={user_q}; \
+         __rtkk_h=\"$(getent passwd {user_q} 2>/dev/null | cut -d: -f6)\"; \
+         if [ -n \"$__rtkk_h\" ]; then export HOME=\"$__rtkk_h\"; \
+         elif [ {user_q} = 'root' ]; then export HOME='/root'; fi; \
+         unset __rtkk_h; \
+         __rtkk_u=\"$(umask)\"; umask 0077; : > {err_q}; umask \"$__rtkk_u\"; unset __rtkk_u; \
+         printf '%s\\n' '{start_marker}'; \
+         ( /bin/sh -c {inner_q} ) </dev/null 2>{err_q}; \
+         __rtkk_rc=$?; \
+         printf '\\n%s\\n' '{err_marker}'; \
+         cat {err_q} 2>/dev/null || true; \
+         rm -f {err_q} 2>/dev/null || true; \
+         exit \"$__rtkk_rc\""
+    );
+    let payload_q = crate::utils::shell_single_quote(&payload);
+    let cmd = format!("LC_ALL=C su -s /bin/sh -c {payload_q} {user_q}");
+    SuFrameSpec {
+        cmd,
+        start_marker,
+        err_marker,
+    }
+}
+
+/// Returns `true` if `haystack` contains `needle`.
+pub(crate) fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
+    find_subslice(haystack, needle).is_some()
+}
+
+/// Returns `true` if `buf` contains an `ASCII` `"Password:"` prompt from `su`.
+pub(crate) fn contains_password_prompt(buf: &[u8]) -> bool {
+    buf.windows(9).any(|w| w.eq_ignore_ascii_case(b"password:"))
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn rfind_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(haystack.len());
+    }
+    haystack
+        .windows(needle.len())
+        .rposition(|window| window == needle)
+}
+
+fn strip_leading_line_break(slice: &[u8]) -> &[u8] {
+    slice
+        .strip_prefix(b"\r\n")
+        .or_else(|| slice.strip_prefix(b"\n"))
+        .unwrap_or(slice)
+}
+
+fn strip_trailing_single_line_break(slice: &[u8]) -> &[u8] {
+    slice
+        .strip_suffix(b"\r\n")
+        .or_else(|| slice.strip_suffix(b"\n"))
+        .unwrap_or(slice)
+}
+
+/// Parses raw `PTY` output from [`build_su_shell_cmd`] into separated `stdout` and `stderr`,
+/// or returns [`ConnectorError::AuthenticationFailed`] if `su` rejected credentials before
+/// reaching `start_marker`.
+pub(crate) fn parse_su_framed_output(
+    raw: &[u8],
+    start_marker: &str,
+    err_marker: &str,
+    exit_code: i32,
+) -> Result<CommandResult, ConnectorError> {
+    let start_bytes = start_marker.as_bytes();
+    let Some(start_idx) = find_subslice(raw, start_bytes) else {
+        let cleaned: Vec<u8> = raw.iter().copied().filter(|&b| b != b'\r').collect();
+        let text = String::from_utf8_lossy(&cleaned);
+        let detail = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| {
+                !line.is_empty()
+                    && !line.eq_ignore_ascii_case("password:")
+                    && !line
+                        .strip_prefix("Password:")
+                        .or_else(|| line.strip_prefix("password:"))
+                        .is_some_and(|rest| rest.trim().is_empty())
+            })
+            .map(|line| {
+                line.strip_prefix("Password:")
+                    .or_else(|| line.strip_prefix("password:"))
+                    .map_or(line, str::trim)
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let msg = if detail.is_empty() {
+            format!("su privilege escalation failed before command start (rc={exit_code})")
+        } else {
+            format!("su privilege escalation failed (rc={exit_code}): {detail}")
+        };
+        return Err(ConnectorError::AuthenticationFailed(msg));
+    };
+
+    let after_marker_pos = start_idx.saturating_add(start_bytes.len());
+    let after_start = strip_leading_line_break(raw.get(after_marker_pos..).unwrap_or(&[]));
+
+    let err_bytes = err_marker.as_bytes();
+    if let Some(err_idx) = rfind_subslice(after_start, err_bytes) {
+        let before_err = after_start.get(..err_idx).unwrap_or(&[]);
+        let stdout = strip_trailing_single_line_break(before_err).to_vec();
+        let after_err_pos = err_idx.saturating_add(err_bytes.len());
+        let stderr =
+            strip_leading_line_break(after_start.get(after_err_pos..).unwrap_or(&[])).to_vec();
+        Ok(CommandResult {
+            stdout,
+            stderr,
+            exit_code,
+        })
+    } else {
+        Ok(CommandResult {
+            stdout: after_start.to_vec(),
+            stderr: Vec::new(),
+            exit_code,
+        })
+    }
+}
+
 /// Reads all bytes from `reader` up to `max_bytes`, failing if the cap is exceeded.
 pub(crate) async fn read_stream_bounded<R>(
     reader: &mut R,
@@ -473,4 +656,85 @@ pub async fn create_connector(config: &TargetConfig) -> Result<Connector, Connec
     }));
     conn.init().await?;
     Ok(conn)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BecomeMethod, ConnectorError, build_su_shell_cmd, contains_password_prompt,
+        parse_su_framed_output,
+    };
+
+    #[test]
+    fn become_method_parses_case_insensitively_and_rejects_unknown() -> Result<(), String> {
+        if BecomeMethod::parse_str("sudo")? != BecomeMethod::Sudo {
+            return Err("expected Sudo".to_string());
+        }
+        if BecomeMethod::parse_str("  SU ")? != BecomeMethod::Su {
+            return Err("expected Su".to_string());
+        }
+        if BecomeMethod::parse_str("doas").is_ok() {
+            return Err("expected error for unsupported become_method 'doas'".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn su_frame_parser_preserves_exact_stdout_stderr_and_binary_bytes() -> Result<(), String> {
+        let spec = build_su_shell_cmd("root", "printf 'true'");
+        if !spec.cmd.contains("LC_ALL=C su -s /bin/sh -c") {
+            return Err("expected POSIX su invocation".to_string());
+        }
+
+        let raw_no_nl = format!(
+            "Password: \n{}\ntrue\n{}\n[WARNING]: sample warning\n",
+            spec.start_marker, spec.err_marker
+        );
+        let res_no_nl = parse_su_framed_output(
+            raw_no_nl.as_bytes(),
+            &spec.start_marker,
+            &spec.err_marker,
+            0,
+        )
+        .map_err(|e| e.to_string())?;
+        if res_no_nl.stdout != b"true" {
+            return Err(format!(
+                "expected exact b\"true\", got {:?}",
+                res_no_nl.stdout
+            ));
+        }
+        if res_no_nl.stderr != b"[WARNING]: sample warning\n" {
+            return Err(format!("unexpected stderr: {:?}", res_no_nl.stderr));
+        }
+
+        let mut bin_raw = Vec::new();
+        bin_raw.extend_from_slice(b"Password: \r\n");
+        bin_raw.extend_from_slice(spec.start_marker.as_bytes());
+        bin_raw.extend_from_slice(b"\r\n\x00\x01\xfe\xff\n");
+        bin_raw.extend_from_slice(spec.err_marker.as_bytes());
+        bin_raw.extend_from_slice(b"\r\n");
+        let res_bin = parse_su_framed_output(&bin_raw, &spec.start_marker, &spec.err_marker, 0)
+            .map_err(|e| e.to_string())?;
+        if res_bin.stdout != b"\x00\x01\xfe\xff" || !res_bin.stderr.is_empty() {
+            return Err(format!("binary stdout corrupted: {:?}", res_bin.stdout));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn su_frame_parser_reports_authentication_failure_when_marker_missing() -> Result<(), String> {
+        if !contains_password_prompt(b"Password: ") {
+            return Err("expected password prompt detection".to_string());
+        }
+        let raw_fail = b"Password: \nsu: Authentication failure\n";
+        let err = parse_su_framed_output(raw_fail, "__START__", "__ERR__", 1);
+        match err {
+            Err(ConnectorError::AuthenticationFailed(msg))
+                if msg.contains("Authentication failure") =>
+            {
+                Ok(())
+            }
+            other => Err(format!("expected AuthenticationFailed, got {other:?}")),
+        }
+    }
 }

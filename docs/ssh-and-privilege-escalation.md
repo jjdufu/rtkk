@@ -129,7 +129,7 @@ visudo -cf /etc/sudoers.d/deploy
 
 ## 3. 在 `rtkk` 中配置 `become` 提权（Inventory / Play / Task）
 
-`rtkk` 连接层内置 `PrivilegeConfig` 提权模型，对远端命令执行（`command` / `shell` / `systemd` / `sysctl` / `modprobe`）及特权文件传输（`copy` / `template` / `fetch` 先经受控临时路径中转再提权原子落盘或读取）提供一致的 `sudo` 封装。
+`rtkk` 连接层内置 `PrivilegeConfig` 提权模型，同时支持 **`sudo`**（默认）与 **`su`**（基于 `PTY` 与目标账号 `root` 密码）两种提权方式，对远端命令执行（`command` / `shell` / `systemd` / `sysctl` / `modprobe`）及特权文件传输（`copy` / `template` / `fetch` 先经受控临时路径中转再提权原子落盘或读取）提供一致封装。
 
 ### 3.1 Inventory 全局或主机级配置（`configs/inventory.yaml`）
 
@@ -138,20 +138,25 @@ vars:
   ansible_user: "deploy"
   ansible_ssh_private_key_file: "~/.ssh/rtkk_ed25519"
   ansible_become: true
+  # 提权方式: "sudo"（默认，验证普通用户口令或免密） | "su"（无需配置 sudoers，验证 root 口令）
+  ansible_become_method: "sudo"
   ansible_become_user: "root"
-  # 若采用上文「方案 B（口令保护的 sudo）」，可在此配置或通过 CLI -s 传入：
+  # 若采用「口令保护的 sudo」或「su 提权」，可在此配置对应口令或通过 CLI -s 传入：
   # ansible_become_pass: "<STRONG_PASSWORD>"
 ```
 
-若不希望将 `ansible_become_pass` 落盘写入 YAML，可在执行时通过 `-s` 动态传入：
+若目标主机禁止修改 `/etc/sudoers`、仅允许普通用户登录后通过 `root` 密码执行 `su` 提权，只需指定 `ansible_become_method: "su"` 并通过 `-s` 传入 `root` 密码：
 
 ```bash
-rtkk run configs/deploy.yaml -i configs/inventory.yaml -s "ansible_become_pass=<STRONG_PASSWORD>"
+rtkk run configs/deploy.yaml -i configs/inventory.yaml \
+  -s ansible_become=true \
+  -s ansible_become_method=su \
+  -s "ansible_become_pass=<ROOT_PASSWORD>"
 ```
 
 ### 3.2 Play 级与 Task 级细粒度覆盖
 
-在自定义 Playbook 中，也可以在单个 Play 或单个 Task 上按需开启或关闭 `become` 及指定 `become_user`（Task 级优先级高于 Play 级，Play 级高于 Inventory 默认值）：
+在自定义 Playbook 中，也可以在单个 Play 或单个 Task 上按需开启或关闭 `become`、切换 `become_method`（`sudo` / `su`）及指定 `become_user`（Task 级优先级高于 Play 级，Play 级高于 Inventory 默认值）：
 
 ```yaml
 - name: Node maintenance with privilege escalation

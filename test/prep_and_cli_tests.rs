@@ -419,7 +419,9 @@ roles:
         ("ansible_user".to_string(), "deploy".to_string()),
         ("ansible_port".to_string(), "2222".to_string()),
         ("ansible_become".to_string(), "true".to_string()),
+        ("ansible_become_method".to_string(), "su".to_string()),
         ("ansible_become_user".to_string(), "secadmin".to_string()),
+        ("ansible_become_pass".to_string(), "root-secret".to_string()),
         (
             "ansible_ssh_host_key_checking".to_string(),
             "accept-new".to_string(),
@@ -452,8 +454,19 @@ roles:
         .as_ref()
         .ok_or("expected PrivilegeConfig from -s ansible_become=true")?;
     ensure(
-        priv_cfg.become_enabled && priv_cfg.become_user.as_deref() == Some("secadmin"),
-        "expected become_enabled=true and become_user=Some(\"secadmin\")",
+        priv_cfg.become_enabled
+            && priv_cfg.become_method == rtkk::connector::BecomeMethod::Su
+            && priv_cfg.become_user.as_deref() == Some("secadmin")
+            && priv_cfg.become_password.as_deref() == Some("root-secret"),
+        "expected become_enabled=true, become_method=Su, become_user=secadmin, become_password=root-secret",
+    )?;
+
+    let bad_overrides = vec![("ansible_become_method".to_string(), "doas".to_string())];
+    ensure(
+        load_inventory_with_overrides(&inv_path.to_string_lossy(), &bad_overrides)
+            .await
+            .is_err(),
+        "unsupported ansible_become_method must be rejected during inventory loading",
     )?;
     Ok(())
 }

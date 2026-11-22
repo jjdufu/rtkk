@@ -3,7 +3,9 @@ vars:
   ansible_user: "root"
   ansible_ssh_pass: "change-me"
   # ansible_become: false
+  # ansible_become_method: "sudo"   # "sudo" (default) | "su"
   # ansible_become_user: "root"
+  # ansible_become_pass: "change-me"
   # ansible_ssh_host_key_checking: false
   rtkk_bin: "./target/release/rtkk"
   rtkk_inventory: "configs/inventory.yaml"

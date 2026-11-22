@@ -56,9 +56,10 @@
   tasks:
     - name: Disable swap permanently
       shell: "swapoff -a && sed -ri '/^[^#]*swap/s/^/#/' /etc/fstab"
-    - name: Synchronize cluster hosts entries in /etc/hosts
+    - name: Synchronize cluster hosts entries in /etc/hosts when not already prepared
       shell: |
-        sed -i '/# RTKK HOSTS START/,/# RTKK HOSTS END/d' /etc/hosts
+        if ! grep -q '^# RTKK HOSTS START$' /etc/hosts 2>/dev/null || [ '{{ default "false" .force_hosts_sync }}' = 'true' ]; then
+        awk '/^# RTKK HOSTS START$/ { skip=1; next } /^# RTKK HOSTS END$/ { skip=0; next } !skip { print }' /etc/hosts > /tmp/.rtkk_deploy_hosts && cat /tmp/.rtkk_deploy_hosts > /etc/hosts && rm -f /tmp/.rtkk_deploy_hosts
         cat <<'EOF' >> /etc/hosts
         # RTKK HOSTS START
         {{- range $h := .groups.all }}
@@ -66,6 +67,7 @@
         {{- end }}
         # RTKK HOSTS END
         EOF
+        fi
     - name: Load bridge netfilter module
       modprobe:
         name: br_netfilter

@@ -3,7 +3,9 @@
 use crate::cert::{
     CertPolicy, GenCertArgs, generate_certificate, parse_duration_hours, verify_certificate_files,
 };
-use crate::connector::{ConnectorType, HostKeyPolicy, PrivilegeConfig, SshConfig, TargetConfig};
+use crate::connector::{
+    BecomeMethod, ConnectorType, HostKeyPolicy, PrivilegeConfig, SshConfig, TargetConfig,
+};
 use crate::error::RtkkError;
 use crate::inventory::{FlatInventory, Inventory};
 use clap::{Parser, Subcommand};
@@ -388,12 +390,22 @@ fn ssh_config_from_vars(vars: &HashMap<String, Value>) -> Option<SshConfig> {
     })
 }
 
-fn privilege_from_vars(vars: &HashMap<String, Value>) -> Option<PrivilegeConfig> {
+fn privilege_from_vars(
+    vars: &HashMap<String, Value>,
+) -> Result<Option<PrivilegeConfig>, RtkkError> {
     let become_enabled = vars
         .get("ansible_become")
         .or_else(|| vars.get("become"))
         .and_then(parse_bool_val)
         .unwrap_or(false);
+    let become_method_opt = match vars
+        .get("ansible_become_method")
+        .or_else(|| vars.get("become_method"))
+        .and_then(Value::as_str)
+    {
+        Some(raw) => Some(BecomeMethod::parse_str(raw).map_err(RtkkError::Inventory)?),
+        None => None,
+    };
     let become_user = vars
         .get("ansible_become_user")
         .or_else(|| vars.get("become_user"))
@@ -405,14 +417,19 @@ fn privilege_from_vars(vars: &HashMap<String, Value>) -> Option<PrivilegeConfig>
         .or_else(|| vars.get("become_pass"))
         .and_then(Value::as_str)
         .map(String::from);
-    if !become_enabled && become_user.is_none() && become_password.is_none() {
-        return None;
+    if !become_enabled
+        && become_method_opt.is_none()
+        && become_user.is_none()
+        && become_password.is_none()
+    {
+        return Ok(None);
     }
-    Some(PrivilegeConfig {
+    Ok(Some(PrivilegeConfig {
         become_enabled,
+        become_method: become_method_opt.unwrap_or_default(),
         become_user,
         become_password,
-    })
+    }))
 }
 
 fn connector_type_from_vars(vars: &HashMap<String, Value>) -> Option<ConnectorType> {
@@ -427,10 +444,10 @@ fn connector_type_from_vars(vars: &HashMap<String, Value>) -> Option<ConnectorTy
     }
 }
 
-fn build_target_configs(flat: &FlatInventory) -> HashMap<String, TargetConfig> {
+fn build_target_configs(flat: &FlatInventory) -> Result<HashMap<String, TargetConfig>, RtkkError> {
     let mut target_configs = HashMap::new();
     for (host, vars) in &flat.host_vars {
-        let privilege = privilege_from_vars(vars);
+        let privilege = privilege_from_vars(vars)?;
         if host == "localhost" {
             target_configs.insert(
                 host.clone(),
@@ -457,7 +474,7 @@ fn build_target_configs(flat: &FlatInventory) -> HashMap<String, TargetConfig> {
             },
         );
     }
-    target_configs
+    Ok(target_configs)
 }
 
 /// Load and resolve an inventory file without extra CLI `-s` overrides.
@@ -495,7 +512,7 @@ pub async fn load_inventory_with_overrides(
     }
     crate::playbook::inject_dynamic_inventory_vars(&flat.groups, &mut flat.host_vars);
     crate::playbook::inject_runtime_vars(&mut flat.host_vars, inventory_path);
-    let target_configs = build_target_configs(&flat);
+    let target_configs = build_target_configs(&flat)?;
     let inventory_dir = Path::new(inventory_path).parent().map(|p| {
         if p.as_os_str().is_empty() {
             PathBuf::from(".")

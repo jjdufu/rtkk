@@ -1,6 +1,7 @@
 use super::{
-    CommandResult, ConnectorError, PrivilegeConfig, SUDO_PROMPT_MARKER, max_cmd_output_bytes,
-    read_stream_bounded, strip_sudo_prompt, unique_tmp_id,
+    BecomeMethod, CommandResult, ConnectorError, PrivilegeConfig, SUDO_PROMPT_MARKER,
+    build_su_shell_cmd, contains_password_prompt, contains_subslice, max_cmd_output_bytes,
+    parse_su_framed_output, read_stream_bounded, strip_sudo_prompt, unique_tmp_id,
 };
 use crate::utils::shell_single_quote;
 use std::path::{Path, PathBuf};
@@ -117,7 +118,7 @@ impl LocalConnector {
         Self { privilege: None }
     }
 
-    fn active_escalation(&self) -> Option<(&str, Option<&str>)> {
+    fn active_escalation(&self) -> Option<(BecomeMethod, &str, Option<&str>)> {
         let priv_cfg = self.privilege.as_ref()?;
         if !priv_cfg.become_enabled {
             return None;
@@ -133,7 +134,113 @@ impl LocalConnector {
         if std::env::var("USER").as_deref() == Ok(target_user) {
             return None;
         }
-        Some((target_user, priv_cfg.become_password.as_deref()))
+        Some((
+            priv_cfg.become_method,
+            target_user,
+            priv_cfg.become_password.as_deref(),
+        ))
+    }
+
+    async fn execute_local_su(
+        target_user: &str,
+        inner_cmd: &str,
+        pw_opt: Option<&str>,
+    ) -> Result<CommandResult, ConnectorError> {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let pw = pw_opt.filter(|s| !s.is_empty()).ok_or_else(|| {
+            ConnectorError::AuthenticationFailed(
+                "become_method 'su' requires non-empty ansible_become_pass (target user password)"
+                    .to_string(),
+            )
+        })?;
+        let frame = build_su_shell_cmd(target_user, inner_cmd);
+        let pty_wrapped = format!(
+            "stty -echo -onlcr -ocrnl 2>/dev/null || true; {}",
+            frame.cmd
+        );
+
+        let mut cmd = Command::new("script");
+        if cfg!(target_os = "macos") {
+            cmd.args(["-q", "/dev/null", "/bin/sh", "-c", &pty_wrapped]);
+        } else {
+            cmd.args(["-qefc", &pty_wrapped, "/dev/null"]);
+        }
+        cmd.kill_on_drop(true)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        let mut child = cmd.spawn().map_err(|e| {
+            ConnectorError::CommandExecutionFailed(format!("failed to spawn script for su: {e}"))
+        })?;
+        let mut stdout_pipe = child.stdout.take().ok_or_else(|| {
+            ConnectorError::IOError("failed to capture local su stdout".to_string())
+        })?;
+        let mut stderr_pipe = child.stderr.take().ok_or_else(|| {
+            ConnectorError::IOError("failed to capture local su stderr".to_string())
+        })?;
+        let mut stdin_pipe = child.stdin.take().ok_or_else(|| {
+            ConnectorError::IOError("failed to capture local su stdin".to_string())
+        })?;
+
+        let max_bytes = max_cmd_output_bytes();
+        let pw_line = format!("{pw}\n");
+        let start_bytes = frame.start_marker.as_bytes().to_vec();
+
+        let read_write_fut = async move {
+            let mut raw_buf = Vec::new();
+            let mut chunk = vec![0u8; 8192];
+            let mut password_sent = false;
+            loop {
+                let n = stdout_pipe
+                    .read(&mut chunk)
+                    .await
+                    .map_err(|e| ConnectorError::IOError(e.to_string()))?;
+                if n == 0 {
+                    break;
+                }
+                if raw_buf.len().saturating_add(n) > max_bytes {
+                    return Err(ConnectorError::IOError(format!(
+                        "command stdout exceeded RTKK_MAX_CMD_OUTPUT_BYTES ({max_bytes})"
+                    )));
+                }
+                if let Some(slice) = chunk.get(..n) {
+                    raw_buf.extend_from_slice(slice);
+                }
+                if !password_sent {
+                    if contains_subslice(&raw_buf, &start_bytes) {
+                        password_sent = true;
+                    } else if contains_password_prompt(&raw_buf) {
+                        if let Err(e) = stdin_pipe.write_all(pw_line.as_bytes()).await
+                            && e.kind() != std::io::ErrorKind::BrokenPipe
+                        {
+                            return Err(ConnectorError::IOError(e.to_string()));
+                        }
+                        let _ = stdin_pipe.flush().await;
+                        password_sent = true;
+                    }
+                }
+            }
+            drop(stdin_pipe);
+            Ok::<Vec<u8>, ConnectorError>(raw_buf)
+        };
+        let stderr_fut = read_stream_bounded(&mut stderr_pipe, max_bytes, "stderr");
+        let (raw_buf, extra_stderr) = tokio::try_join!(read_write_fut, stderr_fut)?;
+        let status = child
+            .wait()
+            .await
+            .map_err(|e| ConnectorError::IOError(e.to_string()))?;
+        let exit_code = status.code().unwrap_or(-1);
+        let mut parsed =
+            parse_su_framed_output(&raw_buf, &frame.start_marker, &frame.err_marker, exit_code)?;
+        if !extra_stderr.is_empty() {
+            if !parsed.stderr.is_empty() && !parsed.stderr.ends_with(b"\n") {
+                parsed.stderr.push(b'\n');
+            }
+            parsed.stderr.extend_from_slice(&extra_stderr);
+        }
+        Ok(parsed)
     }
 
     /// Initializes the local connector (no-op).
@@ -175,7 +282,11 @@ impl LocalConnector {
                 "empty argv".to_string(),
             ));
         };
-        if let Some((target_user, pw_opt)) = self.active_escalation() {
+        if let Some((method, target_user, pw_opt)) = self.active_escalation() {
+            if method == BecomeMethod::Su {
+                let joined = shell_words::join(argv);
+                return Self::execute_local_su(target_user, &joined, pw_opt).await;
+            }
             let mut cmd = Command::new("sudo");
             if let Some(pw) = pw_opt {
                 cmd.args([
@@ -207,7 +318,10 @@ impl LocalConnector {
     ///
     /// Returns [`ConnectorError`] if spawning `/bin/sh` or reading output fails.
     pub async fn execute_shell(&self, script: &str) -> Result<CommandResult, ConnectorError> {
-        if let Some((target_user, pw_opt)) = self.active_escalation() {
+        if let Some((method, target_user, pw_opt)) = self.active_escalation() {
+            if method == BecomeMethod::Su {
+                return Self::execute_local_su(target_user, script, pw_opt).await;
+            }
             let mut cmd = Command::new("sudo");
             if let Some(pw) = pw_opt {
                 cmd.args([

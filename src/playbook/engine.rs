@@ -6,7 +6,7 @@ use super::helpers::{
     task_matches_tags_direct,
 };
 use crate::connector::{
-    Connector, ConnectorError, PrivilegeConfig, TargetConfig, create_connector,
+    BecomeMethod, Connector, ConnectorError, PrivilegeConfig, TargetConfig, create_connector,
 };
 use crate::playbook::{Play, Playbook};
 use crate::tasks::{Task, TaskModuleError, TaskResult, execute_task_module, task_needs_hostvars};
@@ -58,6 +58,7 @@ type ConnectingMap = HashMap<String, Arc<OnceCell<Arc<PooledConnector>>>>;
 #[derive(Debug, Clone)]
 struct PlayExecContext {
     play_become: Option<bool>,
+    play_become_method: Option<BecomeMethod>,
     play_become_user: Option<String>,
     batch_idx: usize,
     primary_host: String,
@@ -73,18 +74,30 @@ enum AttemptOutcome {
 fn compute_effective_privilege(
     base_priv: Option<&PrivilegeConfig>,
     play_become: Option<bool>,
+    play_become_method: Option<BecomeMethod>,
     play_become_user: Option<&str>,
     task: &Task,
     host_vars: &Value,
-) -> Option<PrivilegeConfig> {
+) -> Result<Option<PrivilegeConfig>, String> {
     let become_enabled = task
         .r#become
         .or(play_become)
         .or_else(|| base_priv.map(|p| p.become_enabled))
         .unwrap_or(false);
     if !become_enabled {
-        return None;
+        return Ok(None);
     }
+    let become_method = if let Some(m) = task.become_method.or(play_become_method) {
+        m
+    } else if let Some(raw) = host_vars
+        .get("ansible_become_method")
+        .or_else(|| host_vars.get("become_method"))
+        .and_then(Value::as_str)
+    {
+        BecomeMethod::parse_str(raw)?
+    } else {
+        base_priv.map_or(BecomeMethod::Sudo, |p| p.become_method)
+    };
     let become_user = task
         .become_user
         .clone()
@@ -92,6 +105,7 @@ fn compute_effective_privilege(
         .or_else(|| {
             host_vars
                 .get("ansible_become_user")
+                .or_else(|| host_vars.get("become_user"))
                 .and_then(Value::as_str)
                 .map(str::to_string)
         })
@@ -99,14 +113,16 @@ fn compute_effective_privilege(
     let become_password = host_vars
         .get("ansible_become_pass")
         .or_else(|| host_vars.get("ansible_become_password"))
+        .or_else(|| host_vars.get("become_pass"))
         .and_then(Value::as_str)
         .map(str::to_string)
         .or_else(|| base_priv.and_then(|p| p.become_password.clone()));
-    Some(PrivilegeConfig {
+    Ok(Some(PrivilegeConfig {
         become_enabled: true,
+        become_method,
         become_user,
         become_password,
-    })
+    }))
 }
 
 fn describe_loop_item(item: &Value) -> String {
@@ -330,6 +346,7 @@ impl ExecutionEngine {
         };
         let base_ctx = PlayExecContext {
             play_become: play.r#become,
+            play_become_method: play.become_method,
             play_become_user: play.become_user.clone(),
             batch_idx,
             primary_host: primary_host.to_string(),
@@ -437,6 +454,7 @@ impl ExecutionEngine {
             };
             let sub_ctx = PlayExecContext {
                 play_become: task.r#become.or(ctx.play_become),
+                play_become_method: task.become_method.or(ctx.play_become_method),
                 play_become_user: task
                     .become_user
                     .clone()
@@ -823,10 +841,11 @@ impl ExecutionEngine {
         let effective_priv = compute_effective_privilege(
             target_config.privilege.as_ref(),
             ctx.play_become,
+            ctx.play_become_method,
             ctx.play_become_user.as_deref(),
             task,
             host_vars,
-        );
+        )?;
         let mut reconnected = false;
         let mut final_res = TaskResult::default();
         let mut attempt = 0;

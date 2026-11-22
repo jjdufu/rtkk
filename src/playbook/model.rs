@@ -1,5 +1,6 @@
 //! Playbook and Play `YAML` data structures.
 
+use crate::connector::BecomeMethod;
 use crate::tasks::Task;
 use serde::Deserializer;
 use serde_json::Value;
@@ -61,9 +62,12 @@ pub struct Play {
     /// Whether task failures in this play should be ignored instead of aborting execution.
     #[serde(default)]
     pub ignore_errors: Option<bool>,
-    /// Play-level privilege escalation (`sudo`) toggle inherited by tasks in this play.
+    /// Play-level privilege escalation (`sudo` / `su`) toggle inherited by tasks in this play.
     #[serde(default, rename = "become")]
     pub r#become: Option<bool>,
+    /// Play-level privilege escalation mechanism (`sudo` or `su`).
+    #[serde(default)]
+    pub become_method: Option<BecomeMethod>,
     /// Target user for play-level privilege escalation (`"root"` when unset).
     #[serde(default)]
     pub become_user: Option<String>,

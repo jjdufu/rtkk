@@ -1,6 +1,6 @@
 //! Playbook task definitions, template value rendering, and module dispatch.
 
-use crate::connector::Connector;
+use crate::connector::{BecomeMethod, Connector};
 use crate::template::render_template_string;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -67,6 +67,9 @@ pub struct Task {
     /// Optional privilege escalation override (`become: true` / `false`).
     #[serde(default, rename = "become")]
     pub r#become: Option<bool>,
+    /// Optional privilege escalation mechanism override (`become_method: "sudo"` / `"su"`).
+    #[serde(default)]
+    pub become_method: Option<BecomeMethod>,
     /// Optional target account name when privilege escalation is enabled.
     #[serde(default)]
     pub become_user: Option<String>,

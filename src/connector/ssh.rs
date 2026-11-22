@@ -1,10 +1,14 @@
 use super::{
-    CommandResult, ConnectorError, HostKeyPolicy, PrivilegeConfig, SshConfig, build_sudo_shell_cmd,
-    format_host_port, max_cmd_output_bytes, read_stream_bounded, strip_sudo_prompt, unique_tmp_id,
+    BecomeMethod, CommandResult, ConnectorError, HostKeyPolicy, PrivilegeConfig, SshConfig,
+    build_su_shell_cmd, build_sudo_shell_cmd, contains_password_prompt, contains_subslice,
+    format_host_port, max_cmd_output_bytes, parse_su_framed_output, read_stream_bounded,
+    strip_sudo_prompt, unique_tmp_id,
 };
 use crate::utils::shell_single_quote;
 use ssh2_tokio::AsyncSession;
-use ssh2_tokio::ssh2::{CheckResult, KnownHostFileKind, KnownHostKeyFormat};
+use ssh2_tokio::ssh2::{
+    CheckResult, KnownHostFileKind, KnownHostKeyFormat, PtyModeOpcode, PtyModes,
+};
 use std::path::{Path, PathBuf};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -250,7 +254,7 @@ async fn authenticate_session(
 }
 
 impl SshConnector {
-    fn active_escalation(&self) -> Option<(&str, Option<&str>)> {
+    fn active_escalation(&self) -> Option<(BecomeMethod, &str, Option<&str>)> {
         let priv_cfg = self.privilege.as_ref()?;
         if !priv_cfg.become_enabled {
             return None;
@@ -263,7 +267,11 @@ impl SshConnector {
         if self.config.username == target_user {
             return None;
         }
-        Some((target_user, priv_cfg.become_password.as_deref()))
+        Some((
+            priv_cfg.become_method,
+            target_user,
+            priv_cfg.become_password.as_deref(),
+        ))
     }
 
     /// Connects to the remote `SSH` server, verifies its host key, and authenticates.
@@ -378,13 +386,121 @@ impl SshConnector {
         })
     }
 
-    /// Executes `cmd` on the remote `SSH` session, applying `sudo` escalation if configured.
+    async fn exec_su_pty(
+        &self,
+        target_user: &str,
+        inner_cmd: &str,
+        pw_opt: Option<&str>,
+    ) -> Result<CommandResult, ConnectorError> {
+        let pw = pw_opt.filter(|s| !s.is_empty()).ok_or_else(|| {
+            ConnectorError::AuthenticationFailed(
+                "become_method 'su' requires non-empty ansible_become_pass (target user password)"
+                    .to_string(),
+            )
+        })?;
+        let frame = build_su_shell_cmd(target_user, inner_cmd);
+        let session_mutex = self.session.as_ref().ok_or_else(|| {
+            ConnectorError::CommandExecutionFailed("SSH session not initialized".to_string())
+        })?;
+        let session = session_mutex.lock().await;
+        let mut channel = session
+            .channel_session()
+            .await
+            .map_err(|e| ConnectorError::CommandExecutionFailed(e.to_string()))?;
+
+        let mut pty_modes = PtyModes::new();
+        pty_modes.set_boolean(PtyModeOpcode::ECHO, false);
+        pty_modes.set_boolean(PtyModeOpcode::ONLCR, false);
+        pty_modes.set_boolean(PtyModeOpcode::OCRNL, false);
+        channel
+            .request_pty("dumb", Some(pty_modes), None)
+            .await
+            .map_err(|e| {
+                ConnectorError::CommandExecutionFailed(format!("failed to request SSH PTY: {e}"))
+            })?;
+        channel
+            .exec(&frame.cmd)
+            .await
+            .map_err(|e| ConnectorError::CommandExecutionFailed(e.to_string()))?;
+
+        let max_bytes = max_cmd_output_bytes();
+        let mut stream = channel.stream(0);
+        let mut stderr_stream = channel.stderr();
+        let mut raw_buf = Vec::new();
+        let mut chunk = vec![0u8; 8192];
+        let mut password_sent = false;
+        let pw_line = format!("{pw}\n");
+        let start_bytes = frame.start_marker.as_bytes();
+
+        loop {
+            let n = stream
+                .read(&mut chunk)
+                .await
+                .map_err(|e| ConnectorError::IOError(e.to_string()))?;
+            if n == 0 {
+                break;
+            }
+            if raw_buf.len().saturating_add(n) > max_bytes {
+                return Err(ConnectorError::IOError(format!(
+                    "command stdout exceeded RTKK_MAX_CMD_OUTPUT_BYTES ({max_bytes})"
+                )));
+            }
+            if let Some(slice) = chunk.get(..n) {
+                raw_buf.extend_from_slice(slice);
+            }
+            if !password_sent {
+                if contains_subslice(&raw_buf, start_bytes) {
+                    password_sent = true;
+                } else if contains_password_prompt(&raw_buf) {
+                    if let Err(e) = stream.write_all(pw_line.as_bytes()).await
+                        && e.kind() != std::io::ErrorKind::BrokenPipe
+                    {
+                        return Err(ConnectorError::IOError(e.to_string()));
+                    }
+                    let _ = stream.flush().await;
+                    password_sent = true;
+                }
+            }
+        }
+
+        let extra_stderr = read_stream_bounded(&mut stderr_stream, max_bytes, "stderr").await?;
+        channel
+            .wait_eof()
+            .await
+            .map_err(|e| ConnectorError::IOError(e.to_string()))?;
+        channel
+            .close()
+            .await
+            .map_err(|e| ConnectorError::IOError(e.to_string()))?;
+        channel
+            .wait_close()
+            .await
+            .map_err(|e| ConnectorError::IOError(e.to_string()))?;
+        let exit_code = channel
+            .exit_status()
+            .map_err(|e| ConnectorError::CommandExecutionFailed(e.to_string()))?;
+
+        let mut parsed =
+            parse_su_framed_output(&raw_buf, &frame.start_marker, &frame.err_marker, exit_code)?;
+        if !extra_stderr.is_empty() {
+            if !parsed.stderr.is_empty() && !parsed.stderr.ends_with(b"\n") {
+                parsed.stderr.push(b'\n');
+            }
+            parsed.stderr.extend_from_slice(&extra_stderr);
+        }
+        Ok(parsed)
+    }
+
+    /// Executes `cmd` on the remote `SSH` session, applying `sudo` or `su` escalation if configured.
     ///
     /// # Errors
     ///
-    /// Returns [`ConnectorError`] if the `SSH` channel or stream I/O fails.
+    /// Returns [`ConnectorError`] if the `SSH` channel, privilege escalation, or stream I/O fails.
     pub async fn execute_command(&self, cmd: &str) -> Result<CommandResult, ConnectorError> {
-        if let Some((target_user, pw_opt)) = self.active_escalation() {
+        if let Some((method, target_user, pw_opt)) = self.active_escalation() {
+            if method == BecomeMethod::Su {
+                return self.exec_su_pty(target_user, cmd, pw_opt).await;
+            }
             let wrapped = build_sudo_shell_cmd(target_user, cmd, pw_opt.is_some());
             if let Some(pw) = pw_opt {
                 let stdin_buf = format!("{pw}\n");
@@ -418,7 +534,10 @@ impl SshConnector {
     ///
     /// Returns [`ConnectorError`] if remote execution or stream I/O fails.
     pub async fn execute_shell(&self, script: &str) -> Result<CommandResult, ConnectorError> {
-        if let Some((target_user, pw_opt)) = self.active_escalation() {
+        if let Some((method, target_user, pw_opt)) = self.active_escalation() {
+            if method == BecomeMethod::Su {
+                return self.exec_su_pty(target_user, script, pw_opt).await;
+            }
             let wrapped = build_sudo_shell_cmd(target_user, script, pw_opt.is_some());
             if let Some(pw) = pw_opt {
                 let stdin_buf = format!("{pw}\n");
@@ -717,6 +836,33 @@ impl SshConnector {
         Ok(())
     }
 
+    async fn fetch_via_su_staged_sftp(
+        &self,
+        src: &Path,
+        tmp_dest: &Path,
+    ) -> Result<(), ConnectorError> {
+        let (pid, rand_id) = unique_tmp_id();
+        let stage = PathBuf::from(format!("/tmp/.rtkk_fetch_{pid}_{rand_id:016x}"));
+        let src_q = shell_single_quote(&src.to_string_lossy());
+        let stage_q = shell_single_quote(&stage.to_string_lossy());
+        let ssh_user_q = shell_single_quote(&self.config.username);
+        let stage_cmd = format!("install -m 0600 -o {ssh_user_q} -- {src_q} {stage_q}");
+        let stage_res = self.execute_shell(&stage_cmd).await?;
+        if stage_res.exit_code != 0 {
+            let _ = self.execute_shell(&format!("rm -f {stage_q}")).await;
+            return Err(ConnectorError::IOError(format!(
+                "privileged su stage of {} failed (rc={}): {}",
+                src.display(),
+                stage_res.exit_code,
+                String::from_utf8_lossy(&stage_res.stderr)
+            )));
+        }
+        let dl_res = self.fetch_via_sftp(&stage, tmp_dest).await;
+        self.sftp_unlink_quiet(&stage).await;
+        let _ = self.execute_shell(&format!("rm -f {stage_q}")).await;
+        dl_res
+    }
+
     /// Downloads remote file `src` into local path `dest`.
     ///
     /// # Errors
@@ -730,9 +876,13 @@ impl SshConnector {
         }
         let (pid, rand_id) = unique_tmp_id();
         let tmp_dest = PathBuf::from(format!("{}.rtkk.fetch.{pid}.{rand_id}", dest.display()));
-        let transfer_res = if let Some((target_user, pw_opt)) = self.active_escalation() {
-            self.fetch_via_privileged_cat(src, &tmp_dest, target_user, pw_opt)
-                .await
+        let transfer_res = if let Some((method, target_user, pw_opt)) = self.active_escalation() {
+            if method == BecomeMethod::Su {
+                self.fetch_via_su_staged_sftp(src, &tmp_dest).await
+            } else {
+                self.fetch_via_privileged_cat(src, &tmp_dest, target_user, pw_opt)
+                    .await
+            }
         } else {
             self.fetch_via_sftp(src, &tmp_dest).await
         };
