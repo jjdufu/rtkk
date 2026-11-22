@@ -498,7 +498,7 @@
       when: 'eq .inventory_hostname .first_control_plane'
     - name: Initialize first Kubernetes control plane node
       shell: "kubeadm init --config /etc/kubernetes/kubeadm-config.yaml --upload-certs"
-      when: 'and (eq .inventory_hostname .first_control_plane) (ne .first_cp_initialized.stdout "true")'
+      when: '{{- if eq .inventory_hostname .first_control_plane -}}{{ if .first_cp_initialized }}{{ ne .first_cp_initialized.stdout "true" }}{{ else }}true{{ end }}{{- else -}}false{{- end -}}'
       register: init_output
     - name: Configure kubeconfig for root user on first control plane node
       shell: "mkdir -p $HOME/.kube && cp -f /etc/kubernetes/admin.conf $HOME/.kube/config && chmod 0600 $HOME/.kube/config"
@@ -551,40 +551,40 @@
         src: '{{ default "./pki" .pki_dir }}/kubernetes/ca.crt'
         dest: "/etc/kubernetes/pki/ca.crt"
         mode: "0644"
-      when: 'and (ne .inventory_hostname .first_control_plane) (ne .secondary_cp_joined.stdout "true")'
+      when: '{{- if ne .inventory_hostname .first_control_plane -}}{{ if .secondary_cp_joined }}{{ ne .secondary_cp_joined.stdout "true" }}{{ else }}true{{ end }}{{- else -}}false{{- end -}}'
     - name: Copy Kubernetes CA key to joining control plane nodes
       copy:
         src: '{{ default "./pki" .pki_dir }}/kubernetes/ca.key'
         dest: "/etc/kubernetes/pki/ca.key"
         mode: "0600"
-      when: 'and (ne .inventory_hostname .first_control_plane) (ne .secondary_cp_joined.stdout "true")'
+      when: '{{- if ne .inventory_hostname .first_control_plane -}}{{ if .secondary_cp_joined }}{{ ne .secondary_cp_joined.stdout "true" }}{{ else }}true{{ end }}{{- else -}}false{{- end -}}'
     - name: Copy service account private key to joining control plane nodes
       copy:
         src: '{{ default "./pki" .pki_dir }}/kubernetes/sa.key'
         dest: "/etc/kubernetes/pki/sa.key"
         mode: "0600"
-      when: 'and (ne .inventory_hostname .first_control_plane) (ne .secondary_cp_joined.stdout "true")'
+      when: '{{- if ne .inventory_hostname .first_control_plane -}}{{ if .secondary_cp_joined }}{{ ne .secondary_cp_joined.stdout "true" }}{{ else }}true{{ end }}{{- else -}}false{{- end -}}'
     - name: Copy service account public key to joining control plane nodes
       copy:
         src: '{{ default "./pki" .pki_dir }}/kubernetes/sa.pub'
         dest: "/etc/kubernetes/pki/sa.pub"
         mode: "0644"
-      when: 'and (ne .inventory_hostname .first_control_plane) (ne .secondary_cp_joined.stdout "true")'
+      when: '{{- if ne .inventory_hostname .first_control_plane -}}{{ if .secondary_cp_joined }}{{ ne .secondary_cp_joined.stdout "true" }}{{ else }}true{{ end }}{{- else -}}false{{- end -}}'
     - name: Copy front-proxy CA certificate to joining control plane nodes
       copy:
         src: '{{ default "./pki" .pki_dir }}/kubernetes/front-proxy-ca.crt'
         dest: "/etc/kubernetes/pki/front-proxy-ca.crt"
         mode: "0644"
-      when: 'and (ne .inventory_hostname .first_control_plane) (ne .secondary_cp_joined.stdout "true")'
+      when: '{{- if ne .inventory_hostname .first_control_plane -}}{{ if .secondary_cp_joined }}{{ ne .secondary_cp_joined.stdout "true" }}{{ else }}true{{ end }}{{- else -}}false{{- end -}}'
     - name: Copy front-proxy CA key to joining control plane nodes
       copy:
         src: '{{ default "./pki" .pki_dir }}/kubernetes/front-proxy-ca.key'
         dest: "/etc/kubernetes/pki/front-proxy-ca.key"
         mode: "0600"
-      when: 'and (ne .inventory_hostname .first_control_plane) (ne .secondary_cp_joined.stdout "true")'
+      when: '{{- if ne .inventory_hostname .first_control_plane -}}{{ if .secondary_cp_joined }}{{ ne .secondary_cp_joined.stdout "true" }}{{ else }}true{{ end }}{{- else -}}false{{- end -}}'
     - name: Join secondary control plane nodes before deploying kube-vip
       shell: '{{ index .hostvars .first_control_plane "join_cmd" "stdout" }} --control-plane --cri-socket=unix:///var/run/containerd/containerd.sock'
-      when: 'and (ne .inventory_hostname .first_control_plane) (ne .secondary_cp_joined.stdout "true")'
+      when: '{{- if ne .inventory_hostname .first_control_plane -}}{{ if .secondary_cp_joined }}{{ ne .secondary_cp_joined.stdout "true" }}{{ else }}true{{ end }}{{- else -}}false{{- end -}}'
     - name: Ensure super-admin.conf and root kubeconfig exist on secondary control plane nodes
       shell: "test -f /etc/kubernetes/super-admin.conf || cp -p /etc/kubernetes/admin.conf /etc/kubernetes/super-admin.conf; mkdir -p $HOME/.kube && cp -f /etc/kubernetes/admin.conf $HOME/.kube/config && chmod 0600 $HOME/.kube/config"
       when: 'ne .inventory_hostname .first_control_plane'
@@ -691,7 +691,7 @@
       register: worker_joined
     - name: Join worker node to cluster
       shell: '{{ index .hostvars .first_control_plane "join_cmd" "stdout" }} --cri-socket=unix:///var/run/containerd/containerd.sock'
-      when: 'ne .worker_joined.stdout "true"'
+      when: '{{- if .worker_joined -}}{{ ne .worker_joined.stdout "true" }}{{- else -}}true{{- end -}}'
 
 - name: Play 5b - Configure Control Plane Workload Scheduling Policy
   hosts: kube_control_plane
