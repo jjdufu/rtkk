@@ -25,6 +25,8 @@ apt-get update
 apt-get install -y --no-install-recommends \
   ca-certificates \
   curl \
+  jq \
+  python3 \
   pkg-config \
   libssl-dev \
   zlib1g-dev \
@@ -38,9 +40,7 @@ rustc --version
 
 case "$MODE" in
   ci)
-    cargo fmt --all -- --check
-    cargo clippy --workspace --all-targets --locked -- -D warnings
-    cargo test --workspace --locked
+    bash scripts/gate/all.sh
     ;;
   release)
     cargo build --release --locked

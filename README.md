@@ -43,11 +43,19 @@ RTKK 是用 **Rust** 编写的轻量级集群编排与配置管理工具（免 P
 
 ```text
 .
+├── IRON_RULES.md           # 全局五条工程铁律（零豁免红线）
+├── AGENTS.md               # 多端同源工程记忆总纲（与 GEMINI.md / CLAUDE.md 同步）
 ├── OPERATION_GUIDE.md      # 运维准备与安全建议手册（行前检查清单与 Debian 13 操作命令）
-├── docs/                   # 专题技术与加固指南
+├── docs/                   # 常驻工程宪章、活态标准表与运维专题指南
+│   ├── QUALITY_GATES_AND_VERIFICATION.md
+│   ├── MULTI_AGENT_TEAM_WORKFLOW.md
+│   ├── API_CONTRACT.md
+│   ├── standards/          # A1 词表枚举、A4 路由索引、A5 夹具门禁、A6 依赖基线、A7 需求追踪
 │   ├── registry-auth-and-harbor.md
 │   ├── registry-tls-and-http.md
 │   └── ssh-and-privilege-escalation.md
+├── plans/                  # 分阶段演进实施方案仓与历史基线归档（与 docs/ 动静分离）
+├── scripts/                # G1 静态守卫套件（*.py / check-write-scope.sh）与 G3 端到端门禁（gate/*.sh）
 ├── src/                    # 核心库与 CLI 源码
 │   ├── main.rs             # 二进制入口 -> rtkk::cli::run_cli
 │   ├── lib.rs              # 库根模块导出与全局 lint 契约
@@ -498,13 +506,28 @@ kubectl get pods -A
 
 ## 10. 编译、测试与质量门禁
 
-本地开发与校验命令：
+仓库执行 **G1（静态守卫）+ G2（编译、Rustdoc 与单测）+ G3（端到端闭环门禁）** 三级质量门禁体系，详见：
+- [全局工程铁律（IRON_RULES.md）](./IRON_RULES.md)
+- [三级门禁与验证宪章（docs/QUALITY_GATES_AND_VERIFICATION.md）](./docs/QUALITY_GATES_AND_VERIFICATION.md)
+- [多代理协同与写入边界宪章（docs/MULTI_AGENT_TEAM_WORKFLOW.md）](./docs/MULTI_AGENT_TEAM_WORKFLOW.md)
+- [Daemon 接口契约（docs/API_CONTRACT.md）](./docs/API_CONTRACT.md) 与 [演进实施方案仓（plans/README.md）](./plans/README.md)
+
+本地一键运行全套激活门禁（末行输出 `ALL GATES PASS`）：
 
 ```bash
-cargo fmt --check
-cargo clippy --all-targets
-cargo test --workspace
-cargo build --release
+source "$HOME/.cargo/env"
+bash scripts/gate/all.sh
+```
+
+分步开发与发布构建命令：
+
+```bash
+source "$HOME/.cargo/env"
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
+cargo test --workspace --locked
+cargo build --release --locked
 ./target/release/rtkk --version
 ```
 

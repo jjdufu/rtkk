@@ -21,3 +21,13 @@ rtkk_bak/
 *.log
 __pycache__/
 *.pyc
+.gate/
+.env
+.rtkk-daemon/
+deploy/compose/data/
+deploy/compose/logs/
+deploy/compose/backups/
+web/node_modules/
+web/dist/
+web/test-results/
+web/playwright-report/
