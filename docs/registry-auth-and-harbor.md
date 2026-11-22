@@ -11,6 +11,7 @@
 - [2. Harbor v2 项目自动创建与可见性控制](#2-harbor-v2-项目自动创建与可见性控制)
 - [3. Harbor Robot Account 最小权限实践（Debian 13）](#3-harbor-robot-account-最小权限实践debian-13)
 - [4. Kubernetes 节点 `containerd` 私有拉取与 `0600` 权限加固](#4-kubernetes-节点-containerd-私有拉取与-0600-权限加固)
+- [5. 离线第三方 Helm Chart 透明镜像映射（`override_path = true`）](#5-离线第三方-helm-chart-透明镜像映射override_path--true)
 
 ---
 
@@ -142,17 +143,14 @@ curl -fsSL -X PUT -u "${HARBOR_USER}:${HARBOR_PASS}" \
 在“中心构建机一次拉取打包、多套隔离机房 Harbor 离线交付”场景下，`downloads/images/*.tar` 内部的 `manifest.json` `RepoTags` 记录的是打包阶段的私库前缀（例如 `10.0.0.10/rtkk/kube-apiserver:v1.37.2`），而现场环境的目标私库为新地址（例如 `192.168.26.3/rtkk`）：
 
 - **批量清单模式（`--images-file` / WebUI「推送私库」）**：`rtkk` 校验 tar 归档内 `Config` 与全部 `Layers` 文件完整性，只要镜像末级 `<name>:<tag>` 或 `rtkk-media.json` 中的 `source_ref` 与清单条目一致，即自动按当前 `vars.registry.url` 重映射目标标签完成推送，无需外部脚本解包重写 `manifest.json`。
-- **单包显式重标推送（`--retag`）**：单独推送跨私库离线 `.tar` 包时，传入 `--retag` 允许将单镜像归档直接重标并推送到指定 `--target`：
+- **单包显式重标推送（`--retag`）**：单独推送跨私库离线 `.tar` 包时，传入位置参数 `<TAR>` 与 `--retag`，即可将归档内镜像直接重标至当前 `vars.registry.url` 前缀并完成推送：
 
   ```bash
   # 批量推送跨环境离线镜像包（自动按当前 inventory 的 registry.url 重映射）
   rtkk push-images -i configs/inventory.yaml --images-file configs/images.yaml --retag -l logs/push-images.log
 
-  # 单 tar 包跨私库重标推送
-  rtkk push-images -i configs/inventory.yaml \
-    --tar ./downloads/images/kube-apiserver_v1.37.2.tar \
-    --target 192.168.26.3/rtkk/kube-apiserver:v1.37.2 \
-    --retag
+  # 单 tar 包跨私库重标推送至当前 inventory 配置的 registry.url
+  rtkk push-images ./downloads/images/kube-apiserver.tar -i configs/inventory.yaml --retag
   ```
 
 ---
@@ -310,6 +308,78 @@ vars:
   public_registries_mirrors:
     docker.io: "https://10.0.0.10/v2/dockerhub-proxy"
     default: "https://10.0.0.10"
+```
+
+---
+
+## 5. 离线第三方 Helm Chart 透明镜像映射（`override_path = true`）
+
+在内网离线部署 Redis、Prometheus、Ingress-Nginx、Cert-Manager 等第三方 Helm Chart 时，启用 `enable_public_registry_mirrors: true` 可通过 `containerd certs.d` 的 `override_path = true` 将主流公网源透明映射至内网 Harbor 固定源站项目，无需修改任何 Chart 的 `image.registry` / `image.repository`，也无需配置内网 DNS 劫持：
+
+1. **兼容 1 段 / 2 段 / 3+ 段任意路径深度**：`override_path = true` 统一前置 `/v2/<project>`，单段镜像（如 `registry.k8s.io/pause:3.10`）与多级路径镜像（如 `mcr.microsoft.com/oss/kubernetes/pause:3.10`）均满足 Harbor `<project>/<repo>` 要求。
+2. **源站级项目收口与零冲突隔离**：全库固定 9 个源站项目（`dockerhub`、`k8s`、`quay`、`gcr`、`ghcr`、`mcr`、`ecr-public`、`nvcr`、`gitlab`），彻底避免为数十个上游组织建项及跨源同名冲突（如 `docker.io/cilium/*` 与 `quay.io/cilium/*`）。
+3. **自动建项与凭据/CA 联动**：当 `auto_create_mirror_projects: true` 时，`configs/deploy.yaml` 通过内置 `ensure_harbor_projects` 模块幂等调用 Harbor `POST /api/v2.0/projects`（`201` 新建、`409` 幂等跳过；非 Harbor `404` 或无建项权限 `401`/`403` 输出告警不中断部署），节点侧 `hosts.toml`（强制 `0600`）自动继承 `registry.scheme`、`registry.ca_cert_file`、`registry.insecure` 与 `registry.auth_basic`。
+
+### 5.1 开启透明映射配置
+
+在 `configs/inventory.yaml`（或 WebUI `/inventory` -> `镜像仓库与同步` 页签开启「公网源透明映射」）设置：
+
+```yaml
+vars:
+  enable_public_registry_mirrors: true
+  auto_create_mirror_projects: true
+  public_registry_mirrors:
+    - host: "docker.io"
+      project: "dockerhub"
+    - host: "registry-1.docker.io"
+      project: "dockerhub"
+    - host: "index.docker.io"
+      project: "dockerhub"
+    - host: "registry.k8s.io"
+      project: "k8s"
+    - host: "quay.io"
+      project: "quay"
+    - host: "gcr.io"
+      project: "gcr"
+    - host: "k8s.gcr.io"
+      project: "gcr"
+    - host: "ghcr.io"
+      project: "ghcr"
+    - host: "mcr.microsoft.com"
+      project: "mcr"
+    - host: "public.ecr.aws"
+      project: "ecr-public"
+    - host: "nvcr.io"
+      project: "nvcr"
+    - host: "registry.gitlab.com"
+      project: "gitlab"
+```
+
+### 5.2 离线业务镜像导入命名规则对照表
+
+准备第三方 Chart 离线镜像时，按源站域名映射为 `<registry_host>/<project>/<original_path>:<tag>` 推送至 Harbor（注意 Docker Hub 官方单段镜像需保留 `library/` 前缀，因为 `containerd` 解析无命名空间镜像时会自动补全 `library/`）：
+
+| Helm Chart 原始镜像引用 | 导入 Harbor 的目标地址（示例私库主机 `10.0.0.10`） |
+| :--- | :--- |
+| `nginx:1.27`（或 `docker.io/library/nginx:1.27`） | `10.0.0.10/dockerhub/library/nginx:1.27` |
+| `bitnami/redis:7.4`（或 `docker.io/bitnami/redis:7.4`） | `10.0.0.10/dockerhub/bitnami/redis:7.4` |
+| `registry.k8s.io/pause:3.10`（单段路径） | `10.0.0.10/k8s/pause:3.10` |
+| `registry.k8s.io/ingress-nginx/controller:v1.12.1` | `10.0.0.10/k8s/ingress-nginx/controller:v1.12.1` |
+| `quay.io/jetstack/cert-manager-controller:v1.17.1` | `10.0.0.10/quay/jetstack/cert-manager-controller:v1.17.1` |
+| `ghcr.io/prometheus-operator/prometheus-config-reloader:v0.81.0` | `10.0.0.10/ghcr/prometheus-operator/prometheus-config-reloader:v0.81.0` |
+| `mcr.microsoft.com/oss/kubernetes/pause:3.10`（三段路径） | `10.0.0.10/mcr/oss/kubernetes/pause:3.10` |
+
+也可直接在 `configs/inventory.yaml` 的 `vars.extra_images` 中声明业务镜像列表，由 `rtkk sync-images` 一体化拉取并推送至对应源站项目：
+
+```yaml
+vars:
+  extra_images:
+    - name: bitnami-redis
+      source: docker.io/bitnami/redis:7.4
+      target: "10.0.0.10/dockerhub/bitnami/redis:7.4"
+    - name: ingress-nginx-controller
+      source: registry.k8s.io/ingress-nginx/controller:v1.12.1
+      target: "10.0.0.10/k8s/ingress-nginx/controller:v1.12.1"
 ```
 
 ---

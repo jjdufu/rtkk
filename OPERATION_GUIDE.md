@@ -14,6 +14,7 @@
 - [4. 内网 HTTP 镜像仓库与 TLS 加固建议](#4-内网-http-镜像仓库与-tls-加固建议)
 - [5. SSH Root 直连与非 Root `sudo`/`become` 提权建议](#5-ssh-root-直连与非-root-sudobecome-提权建议)
 - [6. Cilium KPR / L2 LoadBalancer VIP 与自定义 CRD 清单编排](#6-cilium-kpr--l2-loadbalancer-vip-与自定义-crd-清单编排)
+- [7. 离线第三方 Helm Chart 透明镜像映射（`override_path = true`）](#7-离线第三方-helm-chart-透明镜像映射override_path--true)
 
 ---
 
@@ -215,3 +216,11 @@ vars:
 
 - **自动对齐控制面接入端点**：开启 `cilium_kube_proxy_replacement` 或 `cilium_l2_announcements` 时，`configs/templates/cilium-values.yaml.gtmpl` 自动注入 `kubeProxyReplacement: "true"`、`k8sServiceHost: {{ .control_plane_endpoint_host }}` 与 `k8sServicePort: {{ .control_plane_endpoint_port }}`。
 - **CRD 注册竞态保护**：`cni-cilium` 角色在提交 Cilium 清单后自动等待 `cilium-operator` 滚动就绪及 `ciliumloadbalancerippools.cilium.io`、`ciliuml2announcementpolicies.cilium.io` 等 CRD 进入 `Established` 状态；`custom-manifests` 角色对每个清单额外执行幂等重试（`retries: 18`、`delay: 5`），确保依赖异步 CRD 的策略对象稳定落盘。
+
+---
+
+## 7. 离线第三方 Helm Chart 透明镜像映射（`override_path = true`）
+
+- **核心能力**：面向不修改原始 Helm Chart 镜像地址的内网离线交付场景，将 `vars.enable_public_registry_mirrors` 设为 `true`（默认 `false`），`rtkk` 在部署阶段自动为 12 个主流公网镜像域名生成基于 `override_path = true` 的 `/etc/containerd/certs.d/<host>/hosts.toml`（权限 `0600`，自动复用 `registry.scheme`、`registry.ca_cert_file`、`registry.insecure` 与 `registry.auth_basic`），并通过内置 `ensure_harbor_projects` 模块在 Harbor 幂等初始化 `dockerhub`、`k8s`、`quay`、`gcr`、`ghcr`、`mcr`、`ecr-public`、`nvcr`、`gitlab` 共 9 个固定源站项目。
+- **镜像导入命名规范**：将上游镜像按 `<registry_host>/<project>/<upstream_path>:<tag>` 推送至私库即可被节点透明拉取（如 `bitnami/redis:7.4` → `10.0.0.10/dockerhub/bitnami/redis:7.4`、`nginx:1.27` → `10.0.0.10/dockerhub/library/nginx:1.27`、`registry.k8s.io/pause:3.10` → `10.0.0.10/k8s/pause:3.10`）。
+- **详细配置与映射对照表**：参阅 **[镜像仓库认证与 Harbor 权限配置指南 · 第 5 节](./docs/registry-auth-and-harbor.md#5-离线第三方-helm-chart-透明镜像映射override_path--true)**。

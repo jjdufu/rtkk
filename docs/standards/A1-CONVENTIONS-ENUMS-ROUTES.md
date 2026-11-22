@@ -15,7 +15,7 @@
 | `src/connector/` | 已交付（Phase 0） | `LocalConnector`、`SshConnector`、`PrivilegeConfig`（`sudo`/`su`）与 `HostKeyPolicy` |
 | `src/inventory/` | 已交付（Phase 0） | 扁平/层级双模 Inventory 解析、DAG 环路检测、确定性排序与 `localhost` 隔离 |
 | `src/playbook/` | 已交付（Phase 0） | Playbook 编译、Roles 展开、并发批次引擎与集群动态变量注入 |
-| `src/tasks/` | 已交付（Phase 0） | 9 类内置原子任务模块执行器与幂等结果聚合 |
+| `src/tasks/` | 已交付（Phase 0） | 10 类内置原子任务模块执行器（含 `ensure_harbor_projects`）与幂等结果聚合 |
 | `src/template/` | 已交付（Phase 0） | `gtmpl` 严格渲染封装、40 个基础设施辅助函数与实例级 `TemplateRegistry`（Step 01） |
 | `src/cert.rs` | 已交付（Phase 0） | ECDSA P-256 证书签发、99 年 `GeneralizedTime`、叶证书截齐与链核验 |
 | `src/registry/` | 已交付（Phase 0） | 纯 Rust OCI Distribution v2 拉取/推送、SHA256 全链路校验、Bearer 交换与 Harbor v2 自动建项 |
