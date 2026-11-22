@@ -3,8 +3,10 @@
 //! quoted commas, and `Harbor` v2 project auto-creation (`harbor_project_public`).
 
 use rtkk::registry::{
-    ImageSpec, PullImagesOptions, PushImagesBatchOptions, execute_pull_images, execute_push_images,
-    execute_push_images_batch, execute_push_images_with_retag, inspect_local_image_tar,
+    ImageSpec, PullImagesOptions, PushImagesBatchOptions, RegistryConfig,
+    default_public_registry_mirrors, ensure_harbor_mirror_projects, execute_pull_images,
+    execute_push_images, execute_push_images_batch, execute_push_images_with_retag,
+    inspect_local_image_tar,
 };
 use rtkk::utils::base64_encode;
 use serde_json::{Value, json};
@@ -83,6 +85,7 @@ struct MockRegistryState {
     token_scopes: Vec<String>,
     created_projects: HashSet<String>,
     created_project_calls: Vec<CreatedProjectRecord>,
+    non_harbor_404: bool,
     uploaded_blobs: HashSet<(String, String)>,
     pushed_manifests: Vec<PushedManifestRecord>,
     next_upload_id: usize,
@@ -224,6 +227,9 @@ fn handle_token_endpoint(req: &HttpReq, st: &mut MockRegistryState) -> HttpResp 
 }
 
 fn handle_harbor_create_project(req: &HttpReq, st: &mut MockRegistryState) -> HttpResp {
+    if st.non_harbor_404 {
+        return HttpResp::empty("404 Not Found", Vec::new());
+    }
     if req.headers.get("authorization") != Some(&st.expected_basic_header) {
         return HttpResp::empty("401 Unauthorized", Vec::new());
     }
@@ -233,6 +239,9 @@ fn handle_harbor_create_project(req: &HttpReq, st: &mut MockRegistryState) -> Ht
     let Some(project_name) = payload.get("project_name").and_then(Value::as_str) else {
         return HttpResp::empty("400 Bad Request", Vec::new());
     };
+    if st.created_projects.contains(project_name) {
+        return HttpResp::json_body("409 Conflict", "application/json", b"{}".to_vec());
+    }
     let public_flag = payload
         .get("public")
         .and_then(Value::as_bool)
@@ -941,5 +950,70 @@ async fn cross_registry_offline_tar_batch_and_single_retag_push_succeed() -> Res
             .iter()
             .any(|m| m.repo == "harbor-c/kube-apiserver" && m.tag == "v1.37.2"),
         "expected single-tar --retag push to land at harbor-c/kube-apiserver:v1.37.2",
+    )
+}
+
+#[tokio::test]
+async fn ensure_harbor_mirror_projects_deduplicates_handles_201_409_and_warns_on_404_401()
+-> Result<(), String> {
+    let state = Arc::new(Mutex::new(MockRegistryState {
+        expected_basic_header: format!("Basic {}", base64_encode(b"admin:secret-pass")),
+        ..MockRegistryState::default()
+    }));
+    let port = spawn_mock_registry(Arc::clone(&state)).await?;
+    let projects: Vec<String> = default_public_registry_mirrors()
+        .into_iter()
+        .map(|m| m.project)
+        .collect();
+
+    let reg = RegistryConfig {
+        url: format!("127.0.0.1:{port}/rtkk"),
+        username: Some("admin".to_string()),
+        password: Some("secret-pass".to_string()),
+        insecure: true,
+        push_empty_policy: None,
+        harbor_project_public: false,
+        scheme: Some("http".to_string()),
+        ca_cert_file: None,
+    };
+
+    // 1) First run: 12 mirror mappings deduplicate to 9 unique Harbor projects (all 201 Created)
+    let first = ensure_harbor_mirror_projects(&reg, &projects, false).await?;
+    ensure(
+        first.created.len() == 9 && first.existing.is_empty() && first.warnings.is_empty(),
+        &format!("expected 9 created mirror projects on first run, got {first:?}"),
+    )?;
+
+    // 2) Second run: all 9 return 409 Conflict -> idempotent existing=9, created=0
+    let second = ensure_harbor_mirror_projects(&reg, &projects, false).await?;
+    ensure(
+        second.created.is_empty() && second.existing.len() == 9 && second.warnings.is_empty(),
+        &format!("expected 9 existing mirror projects on second run, got {second:?}"),
+    )?;
+
+    // 3) Credential lacking create permission (401): warns cleanly when strict=false, errors when strict=true
+    let mut readonly_reg = reg.clone();
+    readonly_reg.password = Some("wrong-robot-secret".to_string());
+    let warn_auth = ensure_harbor_mirror_projects(&readonly_reg, &projects, false).await?;
+    ensure(
+        warn_auth.warnings.len() == 1,
+        &format!("expected non-fatal permission warning, got {warn_auth:?}"),
+    )?;
+    ensure(
+        ensure_harbor_mirror_projects(&readonly_reg, &projects, true)
+            .await
+            .is_err(),
+        "expected strict=true to return error on 401",
+    )?;
+
+    // 4) Non-Harbor registry (CNCF Distribution returning 404): warns cleanly without failing
+    {
+        let mut st = state.lock().await;
+        st.non_harbor_404 = true;
+    }
+    let warn_404 = ensure_harbor_mirror_projects(&reg, &projects, false).await?;
+    ensure(
+        warn_404.warnings.len() == 1,
+        &format!("expected non-fatal 404 warning for non-Harbor registry, got {warn_404:?}"),
     )
 }

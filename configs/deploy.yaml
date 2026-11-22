@@ -169,11 +169,31 @@
         src: "templates/containerd-config.toml.gtmpl"
         dest: "/etc/containerd/config.toml"
         mode: "0644"
+    - name: Ensure Harbor mirror projects exist for public registries
+      ensure_harbor_projects:
+        registry_var: "registry"
+        mirrors_var: "public_registry_mirrors"
+        strict: "{{ default false .strict_mirror_projects }}"
+      run_once: true
+      delegate_to: localhost
+      when: '{{- if eq (printf "%v" (default false .enable_public_registry_mirrors)) "true" -}}{{ eq (printf "%v" (default true .auto_create_mirror_projects)) "true" }}{{- else -}}false{{- end -}}'
+      tags: ["containerd", "registry"]
     - name: Create certs.d directories for public registries
       command: "mkdir -p /etc/containerd/certs.d/{{ .item }}"
       with_items: "{{ .public_registries }}"
+      when: 'ne (printf "%v" (default false .enable_public_registry_mirrors)) "true"'
+    - name: Create certs.d directories for mirrored public registries
+      command: "mkdir -p /etc/containerd/certs.d/{{ .item.host }}"
+      with_items: "{{ .public_registry_mirrors }}"
+      when: 'eq (printf "%v" (default false .enable_public_registry_mirrors)) "true"'
     - name: Create certs.d directory for private registry
-      command: 'mkdir -p /etc/containerd/certs.d/{{ index (splitList "/" .registry.url) 0 }}'
+      command: 'mkdir -p /etc/containerd/certs.d/{{ index (splitList "/" (trimPrefix "http://" (trimPrefix "https://" .registry.url))) 0 }}'
+    - name: Copy private registry custom CA certificate when configured
+      copy:
+        src: "{{ .registry.ca_cert_file }}"
+        dest: '/etc/containerd/certs.d/{{ index (splitList "/" (trimPrefix "http://" (trimPrefix "https://" .registry.url))) 0 }}/ca.crt'
+        mode: "0644"
+      when: 'not (empty (default "" (index . "registry" "ca_cert_file")))'
     - name: Write HTTPS hosts.toml for public registries
       copy:
         content: |
@@ -206,11 +226,49 @@
         dest: "/etc/containerd/certs.d/{{ .item }}/hosts.toml"
         mode: "0600"
       with_items: "{{ .public_registries }}"
+      when: 'ne (printf "%v" (default false .enable_public_registry_mirrors)) "true"'
+    - name: Write override_path hosts.toml for mirrored public registries
+      copy:
+        content: |
+          {{- $regHost := index (splitList "/" (trimPrefix "http://" (trimPrefix "https://" .registry.url))) 0 -}}
+          {{- $rawScheme := default "auto" .registry.scheme -}}
+          {{- $scheme := ternary "http" "https" (eq $rawScheme "http") -}}
+          {{- $hasCa := not (empty (default "" (index . "registry" "ca_cert_file"))) -}}
+          {{- $insecure := ne (printf "%v" (default false .registry.insecure)) "false" -}}
+          {{- $skipVerify := ternary true false $insecure -}}
+          {{- $authBasic := default "" (index . "registry" "auth_basic") -}}
+          server = "https://{{ .item.host }}"
+          [host."{{ $scheme }}://{{ $regHost }}/v2/{{ .item.project }}"]
+            capabilities = ["pull", "resolve"]
+            override_path = true
+          {{- if and (eq $scheme "https") $hasCa }}
+            ca = "/etc/containerd/certs.d/{{ $regHost }}/ca.crt"
+          {{- end }}
+            skip_verify = {{ $skipVerify }}
+          {{- if not (empty $authBasic) }}
+            [host."{{ $scheme }}://{{ $regHost }}/v2/{{ .item.project }}".header]
+              authorization = "Basic {{ $authBasic }}"
+          {{- end }}
+          {{- if and (eq $rawScheme "auto") $insecure }}
+          [host."http://{{ $regHost }}/v2/{{ .item.project }}"]
+            capabilities = ["pull", "resolve"]
+            override_path = true
+            skip_verify = true
+          {{- if not (empty $authBasic) }}
+            [host."http://{{ $regHost }}/v2/{{ .item.project }}".header]
+              authorization = "Basic {{ $authBasic }}"
+          {{- end }}
+          {{- end }}
+        dest: "/etc/containerd/certs.d/{{ .item.host }}/hosts.toml"
+        mode: "0600"
+      with_items: "{{ .public_registry_mirrors }}"
+      when: 'eq (printf "%v" (default false .enable_public_registry_mirrors)) "true"'
     - name: Write access-restricted hosts.toml for private registry
       copy:
         content: |
-          {{- $regHost := index (splitList "/" .registry.url) 0 -}}
+          {{- $regHost := index (splitList "/" (trimPrefix "http://" (trimPrefix "https://" .registry.url))) 0 -}}
           {{- $scheme := default "auto" .registry.scheme -}}
+          {{- $hasCa := not (empty (default "" (index . "registry" "ca_cert_file"))) -}}
           {{- if eq $scheme "http" }}
           server = "http://{{ $regHost }}"
           [host."http://{{ $regHost }}"]
@@ -222,6 +280,9 @@
           server = "https://{{ $regHost }}"
           [host."https://{{ $regHost }}"]
             capabilities = ["pull", "resolve"]
+          {{- if $hasCa }}
+            ca = "/etc/containerd/certs.d/{{ $regHost }}/ca.crt"
+          {{- end }}
             skip_verify = {{ if .registry.insecure }}true{{ else }}false{{ end }}
             [host."https://{{ $regHost }}".header]
               authorization = "Basic {{ .registry.auth_basic }}"
@@ -229,6 +290,9 @@
           server = "https://{{ $regHost }}"
           [host."https://{{ $regHost }}"]
             capabilities = ["pull", "resolve"]
+          {{- if $hasCa }}
+            ca = "/etc/containerd/certs.d/{{ $regHost }}/ca.crt"
+          {{- end }}
             skip_verify = {{ if .registry.insecure }}true{{ else }}false{{ end }}
             [host."https://{{ $regHost }}".header]
               authorization = "Basic {{ .registry.auth_basic }}"
@@ -238,7 +302,7 @@
             [host."http://{{ $regHost }}".header]
               authorization = "Basic {{ .registry.auth_basic }}"
           {{- end }}
-        dest: '/etc/containerd/certs.d/{{ index (splitList "/" .registry.url) 0 }}/hosts.toml'
+        dest: '/etc/containerd/certs.d/{{ index (splitList "/" (trimPrefix "http://" (trimPrefix "https://" .registry.url))) 0 }}/hosts.toml'
         mode: "0600"
     - name: Setup containerd systemd service
       copy:

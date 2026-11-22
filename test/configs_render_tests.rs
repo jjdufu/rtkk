@@ -1265,3 +1265,156 @@ fn ha_3master_10worker_su_cilium_l2_cert100y_and_public_mirrors_regression() -> 
 
     verify_public_registries_mirror_and_auth(&pb, &m1_ctx)
 }
+
+fn verify_override_path_disabled_mode(
+    play2_tasks: &[rtkk::tasks::Task],
+    base_ctx: &Value,
+) -> Result<(), String> {
+    let harbor_task = play2_tasks
+        .iter()
+        .find(|t| t.ensure_harbor_projects.is_some())
+        .ok_or("missing ensure_harbor_projects task in Play 2")?;
+    let harbor_when = harbor_task.when.as_ref().ok_or("missing harbor when")?;
+    ensure(
+        !eval_condition(harbor_when, base_ctx)?,
+        "ensure_harbor_projects must be skipped when enable_public_registry_mirrors is false",
+    )?;
+
+    let legacy_task = play2_tasks
+        .iter()
+        .find(|t| t.name.as_deref() == Some("Write HTTPS hosts.toml for public registries"))
+        .ok_or("missing legacy public registries hosts.toml task")?;
+    let legacy_when = legacy_task.when.as_ref().ok_or("missing legacy when")?;
+    ensure(
+        eval_condition(legacy_when, base_ctx)?,
+        "legacy public_registries task must run when enable_public_registry_mirrors is false",
+    )?;
+
+    let mirror_task = play2_tasks
+        .iter()
+        .find(|t| {
+            t.name.as_deref()
+                == Some("Write override_path hosts.toml for mirrored public registries")
+        })
+        .ok_or("missing override_path hosts.toml task")?;
+    let mirror_when = mirror_task.when.as_ref().ok_or("missing mirror when")?;
+    ensure(
+        !eval_condition(mirror_when, base_ctx)?,
+        "override_path hosts.toml task must be skipped when enable_public_registry_mirrors is false",
+    )
+}
+
+fn verify_override_path_enabled_renders(
+    play2_tasks: &[rtkk::tasks::Task],
+    enabled_ctx: &Value,
+) -> Result<(), String> {
+    let harbor_task = play2_tasks
+        .iter()
+        .find(|t| t.ensure_harbor_projects.is_some())
+        .ok_or("missing ensure_harbor_projects task")?;
+    ensure(
+        eval_condition(
+            harbor_task.when.as_ref().ok_or("missing harbor when")?,
+            enabled_ctx,
+        )?,
+        "ensure_harbor_projects must run when enable_public_registry_mirrors & auto_create_mirror_projects are true",
+    )?;
+
+    let mirror_task = play2_tasks
+        .iter()
+        .find(|t| {
+            t.name.as_deref()
+                == Some("Write override_path hosts.toml for mirrored public registries")
+        })
+        .ok_or("missing override_path hosts.toml task")?;
+    let copy_val = mirror_task.copy.as_ref().ok_or("missing copy body")?;
+    ensure(
+        copy_val.get("mode").and_then(Value::as_str) == Some("0600"),
+        "override_path hosts.toml must enforce mode 0600",
+    )?;
+    let content_tpl = copy_val
+        .get("content")
+        .and_then(Value::as_str)
+        .ok_or("missing content template")?;
+    let dest_tpl = copy_val
+        .get("dest")
+        .and_then(Value::as_str)
+        .ok_or("missing dest template")?;
+
+    let mirrors = enabled_ctx
+        .get("public_registry_mirrors")
+        .and_then(Value::as_array)
+        .ok_or("missing public_registry_mirrors array")?;
+    ensure(
+        mirrors.len() == 12,
+        &format!(
+            "expected 12 default public_registry_mirrors, got {}",
+            mirrors.len()
+        ),
+    )?;
+
+    for item in mirrors {
+        let host = item
+            .get("host")
+            .and_then(Value::as_str)
+            .ok_or("missing host")?;
+        let proj = item
+            .get("project")
+            .and_then(Value::as_str)
+            .ok_or("missing project")?;
+        let mut loop_ctx = enabled_ctx.clone();
+        if let Some(obj) = loop_ctx.as_object_mut() {
+            obj.insert("item".to_string(), item.clone());
+        }
+        let gctx = json_to_gtmpl(&loop_ctx);
+        let dest = render_template_string(dest_tpl, &gctx)?;
+        let rendered = render_template_string(content_tpl, &gctx)?;
+        ensure(
+            dest == format!("/etc/containerd/certs.d/{host}/hosts.toml"),
+            &format!("unexpected dest: {dest}"),
+        )?;
+        let expected_section = format!("[host.\"https://10.0.0.10/v2/{proj}\"]");
+        ensure(
+            rendered.contains(&format!("server = \"https://{host}\""))
+                && rendered.contains(&expected_section)
+                && rendered.contains("override_path = true")
+                && rendered.contains("ca = \"/etc/containerd/certs.d/10.0.0.10/ca.crt\"")
+                && rendered.contains("skip_verify = false")
+                && rendered.contains("authorization = \"Basic "),
+            &format!("unexpected override_path hosts.toml for {host}:\n{rendered}"),
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn public_registry_mirrors_override_path_enabled_and_disabled_modes() -> Result<(), String> {
+    let raw = std::fs::read_to_string(configs_dir().join("inventory.yaml"))
+        .map_err(|e| format!("failed to read inventory.yaml: {e}"))?;
+    let inv: Inventory = serde_yml::from_str(&raw).map_err(|e| e.to_string())?;
+    let mut flat = resolve_inventory(&inv)?;
+    inject_dynamic_inventory_vars(&flat.groups, &mut flat.host_vars);
+    inject_runtime_vars(&mut flat.host_vars, "configs/inventory.yaml");
+
+    let pb = compile_playbook(&configs_dir().join("deploy.yaml"))?;
+    let play2 =
+        pb.0.iter()
+            .find(|p| p.name.as_deref().is_some_and(|n| n.contains("Play 2")))
+            .ok_or("missing Play 2")?;
+    let play2_tasks = play2.tasks.as_ref().ok_or("missing Play 2 tasks")?;
+
+    let base_ctx = host_context_json(&flat, "c23-p61")?;
+    verify_override_path_disabled_mode(play2_tasks, &base_ctx)?;
+
+    let mut enabled_ctx = base_ctx.clone();
+    if let Some(obj) = enabled_ctx.as_object_mut() {
+        obj.insert("enable_public_registry_mirrors".to_string(), json!(true));
+        obj.insert("auto_create_mirror_projects".to_string(), json!(true));
+        if let Some(reg) = obj.get_mut("registry").and_then(Value::as_object_mut) {
+            reg.insert("scheme".to_string(), json!("https"));
+            reg.insert("insecure".to_string(), json!(false));
+            reg.insert("ca_cert_file".to_string(), json!("./pki/registry-ca.crt"));
+        }
+    }
+    verify_override_path_enabled_renders(play2_tasks, &enabled_ctx)
+}

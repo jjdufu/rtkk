@@ -51,7 +51,36 @@ vars:
   cluster_domain: "cluster.local"
   cluster_pool_mask_size: "24"
   nodelocaldns_ip: "169.254.20.10"
-  # containerd certs.d hosts, auth, and mirror overrides for public image sources
+  # Public image sources -> Harbor transparent mirror mapping (containerd override_path = true)
+  enable_public_registry_mirrors: false
+  auto_create_mirror_projects: true
+  # strict_mirror_projects: false
+  public_registry_mirrors:
+    - host: "docker.io"
+      project: "dockerhub"
+    - host: "registry-1.docker.io"
+      project: "dockerhub"
+    - host: "index.docker.io"
+      project: "dockerhub"
+    - host: "registry.k8s.io"
+      project: "k8s"
+    - host: "quay.io"
+      project: "quay"
+    - host: "gcr.io"
+      project: "gcr"
+    - host: "k8s.gcr.io"
+      project: "gcr"
+    - host: "ghcr.io"
+      project: "ghcr"
+    - host: "mcr.microsoft.com"
+      project: "mcr"
+    - host: "public.ecr.aws"
+      project: "ecr-public"
+    - host: "nvcr.io"
+      project: "nvcr"
+    - host: "registry.gitlab.com"
+      project: "gitlab"
+  # containerd certs.d hosts, auth, and mirror overrides for public image sources (used when enable_public_registry_mirrors is false)
   public_registries_insecure: false
   public_registries_auth: false
   # public_registries_mirror: ""
