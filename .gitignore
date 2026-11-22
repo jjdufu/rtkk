@@ -23,6 +23,7 @@ __pycache__/
 *.pyc
 .gate/
 .env
+!deploy/compose/config/.env
 .rtkk-daemon/
 deploy/compose/data/
 deploy/compose/logs/
