@@ -1,6 +1,6 @@
 # 08 · Stage B 实机联调专案：Debian 13 虚拟 VPS 多节点集群与 Harbor 全链路验收矩阵
 
-本文档定义当 Debian 13（`Trixie`）虚拟 VPS 主机准备就绪后，针对 `rtkk` CLI 与 Daemon（`:19912`）开展真实跨机 SSH / `sudo` / `su` 提权、私有 Harbor 镜像同步、DNS 劫持透明镜像缓存及离线高可用 Kubernetes `v1.37.2` 部署的实机验收方案，配套自动化门禁脚本为 [scripts/gate/vps-cluster-e2e.sh](../../scripts/gate/vps-cluster-e2e.sh)。
+本文档定义当 Debian 13（`Trixie`）虚拟 VPS 主机准备就绪后，针对 `rtkk` CLI 与 Daemon（`:19912`）开展真实跨机 SSH / `sudo` / `su` 提权、私有 Harbor 镜像同步、DNS 劫持透明镜像缓存及离线高可用 Kubernetes `v1.37.2` 部署的实机验收方案，配套自动化门禁脚本为 [scripts/gate/vps-cluster-e2e.sh](../../../scripts/gate/vps-cluster-e2e.sh)。
 
 ---
 

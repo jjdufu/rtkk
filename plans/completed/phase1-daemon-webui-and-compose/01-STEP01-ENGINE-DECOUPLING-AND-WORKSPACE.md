@@ -26,7 +26,7 @@
 | `squad-engine` | 修改 | `src/playbook/engine.rs` | `ExecutionEngine` 持有 `Arc<dyn EventSink>`、`TemplateRegistry` 与可选 `Workspace` 句柄，在 Play/Task 起止点发射 `ExecutionEvent` |
 | `squad-engine` | 修改 | `src/registry/{mod.rs,pull.rs,client.rs}` | 分层 Blob 下载与上传循环按字节阈值发射 `ExecutionEvent::ArtifactProgress` |
 | `squad-ops-qa` | 新建 | `test/workspace_and_events_tests.rs` | 双并发引擎实例事件零串扰测试、实例模板表隔离测试、`Workspace` 空目录幂等释放测试 |
-| `squad-ops-qa` | 已预置 | [scripts/gate/step01.sh](../../scripts/gate/step01.sh) | G3 门禁脚本（断言 `"concurrent-sink-isolated"`、`"workspace-bootstrap-idempotent"`） |
+| `squad-ops-qa` | 已预置 | [scripts/gate/step01.sh](../../../scripts/gate/step01.sh) | G3 门禁脚本（断言 `"concurrent-sink-isolated"`、`"workspace-bootstrap-idempotent"`） |
 
 ---
 
@@ -149,7 +149,7 @@ pub struct Workspace {
 
 ---
 
-## 5. 门禁验收标准（[scripts/gate/step01.sh](../../scripts/gate/step01.sh)）
+## 5. 门禁验收标准（[scripts/gate/step01.sh](../../../scripts/gate/step01.sh)）
 
 - 追踪编号：`C15`（`"concurrent-sink-isolated"`）、`C16`（`"workspace-bootstrap-idempotent"`）。
 - 存量 53 项测试与新增 `workspace_and_events_tests` 全部通过，`step01.sh` 末行输出 `GATE step01 PASS`。

@@ -17,12 +17,12 @@
 
 | 负责角色 | 动作 | 文件路径 | 变更内容说明 |
 | :--- | :---: | :--- | :--- |
-| `orchestrator` | 修改 | `src/daemon/routes/mod.rs`、[A4](../../docs/standards/A4-API-CONTRACT-INDEX.md)、`web/src/App.tsx` | 挂载 Step 06 共 8 条路由（累计全部 27 条挂载完毕）；绑定 `/operations` 与 `/pki` 页面路由 |
+| `orchestrator` | 修改 | `src/daemon/routes/mod.rs`、[A4](../../../docs/standards/A4-API-CONTRACT-INDEX.md)、`web/src/App.tsx` | 挂载 Step 06 共 8 条路由（累计全部 27 条挂载完毕）；绑定 `/operations` 与 `/pki` 页面路由 |
 | `squad-engine` | 修改 | `src/playbook/parser.rs` | 暴露只读 `extract_playbook_outline` 函数，返回各 Play 名称、目标选择器、展开后 Task 名与去重 Tags 列表 |
 | `squad-daemon` | 新建 | `src/daemon/routes/{operations.rs,pki.rs}` | 实现编排触发、大纲查询、PKI 扫描/签发/链校验及 `rtkk_bak/` 流式归档导出接口 |
 | `squad-web` | 新建 | `web/src/lib/api/{operations.ts,pki.ts}` | 编排调度、Playbook 大纲、证书元数据与备份下载 API 客户端 |
 | `squad-web` | 新建 | `web/src/pages/{OperationsPage,PkiPage}.tsx` | 快捷动作栏、Play × Task × Host 矩阵、智能滚底日志流、高危二次确认弹窗及证书/备份面板 |
-| `squad-ops-qa` | 已预置 | [scripts/gate/step06.sh](../../scripts/gate/step06.sh) | G3 门禁脚本（覆盖 `C26`、`C27`） |
+| `squad-ops-qa` | 已预置 | [scripts/gate/step06.sh](../../../scripts/gate/step06.sh) | G3 门禁脚本（覆盖 `C26`、`C27`） |
 
 ---
 
@@ -55,7 +55,7 @@
 
 ---
 
-## 5. 门禁验收标准（[scripts/gate/step06.sh](../../scripts/gate/step06.sh)）
+## 5. 门禁验收标准（[scripts/gate/step06.sh](../../../scripts/gate/step06.sh)）
 
 - `python3 scripts/check_routes.py` 双向核验全部 27 条已挂载路由零偏差。
 - 追踪编号：`C26`（`"playbook-outline-and-tagged-run"`）、`C27`（`"pki-api-gen-inspect-verify"`、`"backup-archive-stream"`）。

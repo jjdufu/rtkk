@@ -27,7 +27,7 @@
 
 ## 2. Stage B 能力追踪矩阵（`C15` ～ `C29`）
 
-`C15` ～ `C27`（Step 01 ～ Step 06）已完成代码交付并通过 `step01.sh` ～ `step06.sh` 端到端验收；`C28` ～ `C29`（Step 07 容器部署栈与 Playwright 离线终验）门禁已预置就绪：
+`C15` ～ `C29`（Step 01 ～ Step 07）已完成代码交付并通过 `step01.sh` ～ `step07.sh` 端到端验收：
 
 | 编号 | 领域 | 能力规格描述 | 状态 / 步骤 | 核心实现模块 | 绑定门禁脚本断言 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -44,5 +44,5 @@
 | `C25` | D 离线与私库 | Daemon API 在线探测 Harbor/OCI 连通性并异步驱动镜像拉取、建项与批量推送闭环 | 已交付（Step 05） | `src/daemon/routes/artifacts.rs`、`src/registry/` | step05 `"daemon-registry-ping-and-sync"` |
 | `C26` | B 编排控制台 | Playbook 大纲静态解析与通过 API 触发带 `--tags` 过滤的异步编排执行闭环 | 已交付（Step 06） | `src/daemon/routes/operations.rs`、`web/src/pages/OperationsPage.tsx` | step06 `"playbook-outline-and-tagged-run"` |
 | `C27` | C PKI 与备份 | Web API 在线签发 99y/1y X.509 证书、公开元数据读取（零私钥泄露）、链校验与 `rtkk_bak/` 流式导出 | 已交付（Step 06） | `src/daemon/routes/pki.rs`、`web/src/pages/PkiPage.tsx` | step06 `"pki-api-gen-inspect-verify"`、step06 `"backup-archive-stream"` |
-| `C28` | I 容器与发布 | `debian:13-slim` 非特权容器镜像（`uid=10001`）、独立 `deploy/compose/`（`:19912`）一键启停及 `dex2all/rtkk` 发布 | 待执行（Step 07） | `deploy/`、`.github/workflows/release.yml` | step07 `"compose-lifecycle-19912"` |
-| `C29` | H Park UI 终验 | 纯断网离线拦截下 Playwright 验证 Light/Dark `>= 4.5:1` 对比度、零 `<select>`、全键盘无障碍、`<768px` 零溢出与全旅程 | 待执行（Step 07） | `web/e2e/parkui-and-journey.spec.ts` | step07 `"playwright-parkui-offline-e2e"` |
+| `C28` | I 容器与发布 | `debian:13-slim` 非特权容器镜像（`uid=10001`）、独立 `deploy/compose/`（`:19912`）一键启停及 `dex2all/rtkk` 发布 | 已交付（Step 07） | `deploy/`、`.github/workflows/release.yml` | step07 `"compose-lifecycle-19912"` |
+| `C29` | H Park UI 终验 | 纯断网离线拦截下 Playwright 验证 Light/Dark `>= 4.5:1` 对比度、零 `<select>`、全键盘无障碍、`<768px` 零溢出与全旅程 | 已交付（Step 07） | `web/e2e/parkui-and-journey.spec.ts` | step07 `"playwright-parkui-offline-e2e"` |

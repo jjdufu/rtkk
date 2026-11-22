@@ -16,12 +16,12 @@
 
 | 负责角色 | 动作 | 文件路径 | 变更内容说明 |
 | :--- | :---: | :--- | :--- |
-| `orchestrator` | 修改 | `src/daemon/routes/mod.rs`、[A4](../../docs/standards/A4-API-CONTRACT-INDEX.md)、`web/src/App.tsx` | 挂载 Step 05 共 5 条路由并迁入 `A4` 已挂载表；绑定 `/artifacts` 页面路由 |
+| `orchestrator` | 修改 | `src/daemon/routes/mod.rs`、[A4](../../../docs/standards/A4-API-CONTRACT-INDEX.md)、`web/src/App.tsx` | 挂载 Step 05 共 5 条路由并迁入 `A4` 已挂载表；绑定 `/artifacts` 页面路由 |
 | `squad-engine` | 修改 | `src/registry/{mod.rs,pull.rs,client.rs}` | 暴露支持 `image_names` 子集过滤的库级拉取/推送入口与只读 `ping_registry` 诊断函数 |
 | `squad-daemon` | 新建 | `src/daemon/routes/artifacts.rs` | 实现离线产物盘点、异步下载触发、私库连通性诊断及镜像拉取/推送路由 |
 | `squad-web` | 新建 | `web/src/lib/api/artifacts.ts` | 离线资产状态与镜像同步任务 API 客户端 |
 | `squad-web` | 新建 | `web/src/pages/ArtifactsPage.tsx` | 顶部三卡片统计栏、双标签页资产表格（含可见行多选/半选）与实时传输进度抽屉 |
-| `squad-ops-qa` | 已预置 | [scripts/gate/step05.sh](../../scripts/gate/step05.sh) | G3 门禁脚本（内置本地 Python Mock OCI v2 + Harbor v2 服务验证 `C24`、`C25`） |
+| `squad-ops-qa` | 已预置 | [scripts/gate/step05.sh](../../../scripts/gate/step05.sh) | G3 门禁脚本（内置本地 Python Mock OCI v2 + Harbor v2 服务验证 `C24`、`C25`） |
 
 ---
 
@@ -55,7 +55,7 @@
 
 ---
 
-## 5. 门禁验收标准（[scripts/gate/step05.sh](../../scripts/gate/step05.sh)）
+## 5. 门禁验收标准（[scripts/gate/step05.sh](../../../scripts/gate/step05.sh)）
 
 - `python3 scripts/check_routes.py` 核验累计 19 条已挂载路由双向对齐。
 - 追踪编号：`C24`（`"artifacts-status-inventory-aligned"`）、`C25`（`"daemon-registry-ping-and-sync"`）。

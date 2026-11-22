@@ -17,7 +17,7 @@
 
 | 负责角色 | 动作 | 文件路径 | 变更内容说明 |
 | :--- | :---: | :--- | :--- |
-| `orchestrator` | 新建 | `web/{package.json,tsconfig.json,vite.config.ts}` | 严格锁定 [A6](../../docs/standards/A6-DEPENDENCY-BASELINE.md) 准入包版本，开启 `strict: true`、`noUncheckedIndexedAccess: true`；开发态代理 `/api` 至 `http://127.0.0.1:19912` |
+| `orchestrator` | 新建 | `web/{package.json,tsconfig.json,vite.config.ts}` | 严格锁定 [A6](../../../docs/standards/A6-DEPENDENCY-BASELINE.md) 准入包版本，开启 `strict: true`、`noUncheckedIndexedAccess: true`；开发态代理 `/api` 至 `http://127.0.0.1:19912` |
 | `orchestrator` | 新建 | `web/src/{App.tsx,modules/registry.ts,lib/api/enums.ts}` | 应用路由装配、侧栏导航唯一事实表与同源枚举定义 |
 | `squad-web` | 新建 | `web/AGENTS.md` | 前端专属红线记忆文件（`< 24,000` 字节，由 `docs-and-plans-guard.py` 校验） |
 | `squad-web` | 新建 | `web/index.html`、`web/src/main.tsx` | 纯离线 HTML 入口与首屏防闪烁（FOUC）内联主题恢复脚本 |
@@ -27,7 +27,7 @@
 | `squad-web` | 新建 | `web/src/components/primitives/{Button,Select,Combobox,Dialog,ConfirmModal,Drawer,Tabs,Checkbox,Switch,Toast,DataTable,StateView}.tsx` | 基于 `@ark-ui/react` 的无障碍基础组件库与四态视图容器 |
 | `squad-web` | 新建 | `web/src/components/layout/{AppShell,Sidebar,TopBar,ThemeEditorDrawer,CommandPalette}.tsx` | 桌面固定侧栏 + `<768px` 抽屉折叠壳层、Theme Editor 抽屉与 `Cmd/Ctrl+K` 快捷命令面板 |
 | `squad-web` | 新建 | `web/src/pages/{LoginPage,OverviewPage}.tsx` | 高熵令牌登录页与集群离线就绪度概览大盘（含骨架屏、空态与错误 `重试` 态） |
-| `squad-ops-qa` | 已预置 | [scripts/gate/step03.sh](../../scripts/gate/step03.sh) | G3 门禁脚本（前端静态守卫、构建、内嵌二进制 SPA 路由与 Gzip/ETag `304` 验收） |
+| `squad-ops-qa` | 已预置 | [scripts/gate/step03.sh](../../../scripts/gate/step03.sh) | G3 门禁脚本（前端静态守卫、构建、内嵌二进制 SPA 路由与 Gzip/ETag `304` 验收） |
 
 ---
 
@@ -97,7 +97,7 @@
 
 ---
 
-## 5. 门禁验收标准（[scripts/gate/step03.sh](../../scripts/gate/step03.sh)）
+## 5. 门禁验收标准（[scripts/gate/step03.sh](../../../scripts/gate/step03.sh)）
 
 - `python3 scripts/web-guard.py` 与 `python3 scripts/docs-and-plans-guard.py` 全部返回 `0`。
 - `cd web && npm run typecheck && npm run build` 零错误完成打包。

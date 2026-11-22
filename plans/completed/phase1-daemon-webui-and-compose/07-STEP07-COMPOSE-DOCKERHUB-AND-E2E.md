@@ -25,10 +25,10 @@
 | `squad-ops-qa` | 新建 | `deploy/compose/lib/common.sh` | 自包含容器编排生命周期库（`svc_start`/`stop`/`down`/`status`/`remove`、健康轮询日志） |
 | `squad-ops-qa` | 新建 | `deploy/compose/scripts/{env,start,stop,down,status,remove}.sh` | 权限预处理钩子与六大运维入口脚本 |
 | `squad-ops-qa` | 新建 | `web/playwright.config.ts`、`web/e2e/parkui-and-journey.spec.ts` | 纯离线 Park UI 规范审计与端到端业务旅程测试套件 |
-| `squad-ops-qa` | 已预置 | [scripts/gate/step07.sh](../../scripts/gate/step07.sh) | G3 收官门禁脚本（覆盖 `C28`、`C29`） |
+| `squad-ops-qa` | 已预置 | [scripts/gate/step07.sh](../../../scripts/gate/step07.sh) | G3 收官门禁脚本（覆盖 `C28`、`C29`） |
 | `orchestrator` | 修改 | `.github/scripts/release/{debian13-build.sh,pack-release.sh}` | 构建前编译 `web/dist/`，新增 `rtkk_<ver>_compose.tar.gz` 版本号注入与打包 |
 | `orchestrator` | 修改 | `.github/workflows/{release-please.yml,release.yml}` | `secrets: inherit` 透传、新增 `docker` 构建自检推送作业与 Release 资产上传 |
-| `orchestrator` | 修改 | [scripts/gate/all.sh](../../scripts/gate/all.sh) | 将默认 `ACTIVE_GATES` 推进至 `"step00 step01 step02 step03 step04 step05 step06 step07"` |
+| `orchestrator` | 修改 | [scripts/gate/all.sh](../../../scripts/gate/all.sh) | 将默认 `ACTIVE_GATES` 推进至 `"step00 step01 step02 step03 step04 step05 step06 step07"` |
 
 ---
 
@@ -113,7 +113,7 @@ networks:
 
 ---
 
-## 5. 门禁验收标准（[scripts/gate/step07.sh](../../scripts/gate/step07.sh)）
+## 5. 门禁验收标准（[scripts/gate/step07.sh](../../../scripts/gate/step07.sh)）
 
 - 追踪编号：`C28`（`"compose-lifecycle-19912"`）、`C29`（`"playwright-parkui-offline-e2e"`）。
 - `bash scripts/gate/step07.sh` 输出 `GATE step07 PASS`，且 `bash scripts/gate/all.sh` 跑通 G1 + G2 + `step00..step07` 末行输出 `ALL GATES PASS`。

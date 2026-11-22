@@ -17,13 +17,13 @@
 
 | 负责角色 | 动作 | 文件路径 | 变更内容说明 |
 | :--- | :---: | :--- | :--- |
-| `orchestrator` | 修改 | `src/daemon/routes/mod.rs`、[A4](../../docs/standards/A4-API-CONTRACT-INDEX.md)、`web/src/App.tsx` | 挂载 Step 04 共 5 条路由并迁入 `A4` 已挂载表；绑定 `/inventory` 与 `/templates` 页面路由 |
+| `orchestrator` | 修改 | `src/daemon/routes/mod.rs`、[A4](../../../docs/standards/A4-API-CONTRACT-INDEX.md)、`web/src/App.tsx` | 挂载 Step 04 共 5 条路由并迁入 `A4` 已挂载表；绑定 `/inventory` 与 `/templates` 页面路由 |
 | `squad-daemon` | 新建 | `src/daemon/mask.rs` | 深度敏感键路径掩码器、`"********"` 原密文合并器与 `registry.auth_basic` 自动派生器 |
 | `squad-daemon` | 新建 | `src/daemon/routes/{inventory.rs,templates.rs}` | Inventory 读写/校验/在线探测接口与多模板实时渲染预览接口 |
 | `squad-web` | 新建 | `web/src/lib/api/{inventory.ts,templates.ts}` | 强类型配置、探测结果与模板预览 API 客户端 |
 | `squad-web` | 新建 | `web/src/pages/{InventoryPage,TemplatesPage}.tsx` | 7 标签分区配置台（含过滤可见行全选/半选主机表、IP 段批量生成器、表单⇄YAML 同步）与节点模板预览器 |
 | `squad-ops-qa` | 修改 | `configs/{inventory.yaml,deploy.yaml}`、`test/configs_render_tests.rs` | 增加 `public_registries_insecure: false` 默认项与双栈 `hosts.toml` 模板分支及单测 |
-| `squad-ops-qa` | 已预置 | [scripts/gate/step04.sh](../../scripts/gate/step04.sh) | G3 门禁脚本（覆盖 `C21`、`C22`、`C23`） |
+| `squad-ops-qa` | 已预置 | [scripts/gate/step04.sh](../../../scripts/gate/step04.sh) | G3 门禁脚本（覆盖 `C21`、`C22`、`C23`） |
 
 ---
 
@@ -80,7 +80,7 @@
 
 ---
 
-## 5. 门禁验收标准（[scripts/gate/step04.sh](../../scripts/gate/step04.sh)）
+## 5. 门禁验收标准（[scripts/gate/step04.sh](../../../scripts/gate/step04.sh)）
 
 - `python3 scripts/check_routes.py` 核验累计 14 条已挂载路由双向对齐。
 - 追踪编号：`C21`（`"inventory-secret-masked"`、`"inventory-preserve-unmodified-secret"`）、`C22`（`"public-registries-hijack-hosts-toml"`）、`C23`（`"template-preview-render-ok"`）。

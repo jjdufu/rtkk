@@ -17,18 +17,18 @@
 
 | 负责角色 | 动作 | 文件路径 | 变更内容说明 |
 | :--- | :---: | :--- | :--- |
-| `orchestrator` | 修改 | `Cargo.toml` | 按 [A6](../../docs/standards/A6-DEPENDENCY-BASELINE.md) 引入 `axum 0.8`、`tower-http 0.6`、`subtle 2.6`、`flate2 1.1`（并在 `[build-dependencies]` 引入 `flate2`、`sha2`） |
+| `orchestrator` | 修改 | `Cargo.toml` | 按 [A6](../../../docs/standards/A6-DEPENDENCY-BASELINE.md) 引入 `axum 0.8`、`tower-http 0.6`、`subtle 2.6`、`flate2 1.1`（并在 `[build-dependencies]` 引入 `flate2`、`sha2`） |
 | `orchestrator` | 新建 | `build.rs` | 扫描 `web/dist/` 输出 `$OUT_DIR/embedded_web_assets.rs`（含 Gzip 字节数组、SHA256 ETag、MIME 表与占位回退页） |
 | `orchestrator` | 修改 | `src/{lib.rs,cli.rs}` | 导出 `pub mod daemon;`，新增 `Commands::Serve` 与 `Commands::Healthcheck` |
 | `orchestrator` | 新建 | `src/daemon/{mod.rs,state.rs,routes/mod.rs}` | `DaemonConfig`、`DaemonState`、`ApiError` 统一三字段 JSON 响应、`X-Request-Id` 中间件、优雅停机与 Step 02 路由挂载 |
-| `orchestrator` | 修改 | [A4-API-CONTRACT-INDEX.md](../../docs/standards/A4-API-CONTRACT-INDEX.md) | 将 Step 02 的 9 条路由从「待挂载表」迁入「已挂载表」 |
+| `orchestrator` | 修改 | [A4-API-CONTRACT-INDEX.md](../../../docs/standards/A4-API-CONTRACT-INDEX.md) | 将 Step 02 的 9 条路由从「待挂载表」迁入「已挂载表」 |
 | `squad-daemon` | 新建 | `src/daemon/auth.rs` | 令牌自举、`ConstantTimeEq` 比对、内存会话表、源 IP 失败退避限流与 `RequireAuth` 提取器 |
 | `squad-daemon` | 新建 | `src/daemon/jobs.rs` | `JobManager`、单飞写锁、`CancellationToken` 协作取消、JSONL 追加写盘与任务元数据恢复 |
 | `squad-daemon` | 新建 | `src/daemon/sse.rs` | JSONL 历史帧读取 + `broadcast::Receiver` 去重尾随 + `15s` Keep-Alive SSE 构造器 |
 | `squad-daemon` | 新建 | `src/daemon/embed.rs` | 内嵌静态资产分发、`Accept-Encoding: gzip`、`If-None-Match` `304`、SPA `index.html` 回退与 `/api/*` `404` JSON 隔离 |
 | `squad-daemon` | 新建 | `src/daemon/routes/{health.rs,auth.rs,jobs.rs}` | 实现本步 9 条核心接口处理器 |
 | `squad-ops-qa` | 新建 | `test/daemon_core_tests.rs` | 路由鉴权、令牌 `0600` 权限、单飞锁竞争、SSE 历史+实时无损回放集成测试 |
-| `squad-ops-qa` | 已预置 | [scripts/gate/step02.sh](../../scripts/gate/step02.sh) | G3 门禁脚本（覆盖 `C17`、`C18`、`C19`） |
+| `squad-ops-qa` | 已预置 | [scripts/gate/step02.sh](../../../scripts/gate/step02.sh) | G3 门禁脚本（覆盖 `C17`、`C18`、`C19`） |
 
 ---
 
@@ -72,7 +72,7 @@ rtkk healthcheck [--url <URL>] [--timeout-secs <N>]
 
 ---
 
-## 5. 门禁验收标准（[scripts/gate/step02.sh](../../scripts/gate/step02.sh)）
+## 5. 门禁验收标准（[scripts/gate/step02.sh](../../../scripts/gate/step02.sh)）
 
 - `python3 scripts/check_routes.py` 双向核验 9 条挂载路由 100% 对齐。
 - 追踪编号：`C17`（`"daemon-healthcheck-ok"`）、`C18`（`"unauth-401-blocked"`、`"login-session-ok"`）、`C19`（`"mutating-job-mutex"`、`"sse-replay-complete"`）。
