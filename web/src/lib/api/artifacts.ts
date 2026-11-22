@@ -93,9 +93,12 @@ export function startRegistryPull(params: {
   });
 }
 
-export function startRegistryPush(imageNames: string[]): Promise<AsyncJobSpawnResponse> {
+export function startRegistryPush(
+  imageNames: string[],
+  retag = true,
+): Promise<AsyncJobSpawnResponse> {
   return apiRequest<AsyncJobSpawnResponse>("/api/v1/registry/push", {
     method: "POST",
-    body: { image_names: imageNames },
+    body: { image_names: imageNames, retag },
   });
 }

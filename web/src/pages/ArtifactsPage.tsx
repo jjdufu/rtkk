@@ -283,6 +283,9 @@ export function ArtifactsPage() {
           >
             {r.exists ? "已缓存" : "未拉取"}
           </span>
+          {r.exists && !r.repo_tags_matched ? (
+            <span className="park-badge">跨库重标</span>
+          ) : null}
           {r.exists && r.has_media_manifest ? (
             <span className="park-badge">OCI 元数据</span>
           ) : null}
