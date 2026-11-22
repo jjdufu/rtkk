@@ -21,7 +21,7 @@
 `rtkk` 的远端连接器（`SshConnector`）建立 SSH 会话时，按以下确定性顺序协商身份认证：
 
 1. **显式私钥内容**：当提供内联私钥文本时优先使用。
-2. **显式私钥文件路径（`ansible_ssh_private_key_file`）**：指定路径存在但认证失败时默认**立即报错中止**（仅当显式设置 `ansible_ssh_private_key_fallback_password: true` 时才允许回退密码），防止密钥配置错误时静默降级为弱口令尝试。
+2. **显式私钥文件路径（`ansible_ssh_private_key_file`）**：运行时自动展开前导 `~/` 至 `$HOME/`；当指定路径不存在或认证失败时默认**立即返回包含展开后路径的明确错误并中止**（仅当显式设置 `ansible_ssh_private_key_fallback_password: true` 时才允许回退密码），防止密钥路径配置错误时静默降级为弱口令尝试。
 3. **默认用户目录密钥探测**：未指定显式密钥路径时，依次探测 `$HOME/.ssh/id_ed25519`、`$HOME/.ssh/id_ecdsa`、`$HOME/.ssh/id_rsa`。
 4. **SSH 密码认证（`ansible_ssh_pass`）**：作为无可用密钥或显式开启回退时的认证方式。
 

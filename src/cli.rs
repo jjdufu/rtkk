@@ -90,8 +90,8 @@ pub enum Commands {
     #[command(
         about = "Push OCI images to registry (single tar XOR list batch)",
         after_help = "Two mutually exclusive modes:\n  \
-            Single tar:  rtkk push-images <TAR> -i <inventory>\n  \
-            List batch:  rtkk push-images -i <inventory> --images-file <images.yaml> [--output-dir DIR]\n  \
+            Single tar:  rtkk push-images <TAR> -i <inventory> [--retag]\n  \
+            List batch:  rtkk push-images -i <inventory> --images-file <images.yaml> [--output-dir DIR] [--retag]\n  \
             Do not pass both a tar path and --images-file."
     )]
     PushImages {
@@ -118,6 +118,12 @@ pub enum Commands {
             help = "Tar directory for batch mode (default: vars.image_sync.output_dir)"
         )]
         output_dir: Option<String>,
+        /// Rewrite or remap offline archive tags to match the configured target registry.
+        #[arg(
+            long,
+            help = "Retag offline archive RepoTags to target registry prefix when pushing across environments"
+        )]
+        retag: bool,
     },
     /// Pull `OCI` images into local `Docker`-legacy tarballs.
     #[command(about = "Pull OCI images into local docker-legacy tarballs (pure Rust)")]
@@ -398,7 +404,9 @@ fn ssh_config_from_vars(vars: &HashMap<String, Value>) -> Option<SshConfig> {
     let private_key = vars
         .get("ansible_ssh_private_key_file")
         .and_then(Value::as_str)
-        .map(String::from);
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(crate::utils::expand_tilde_str);
     let port = vars.get("ansible_port").and_then(parse_u16_val);
     let private_key_fallback_password = vars
         .get("ansible_ssh_private_key_fallback_password")
@@ -407,7 +415,9 @@ fn ssh_config_from_vars(vars: &HashMap<String, Value>) -> Option<SshConfig> {
     let known_hosts_file = vars
         .get("ansible_ssh_known_hosts_file")
         .and_then(Value::as_str)
-        .map(String::from);
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(crate::utils::expand_tilde_str);
     Some(SshConfig {
         username: user.to_string(),
         port,
@@ -545,6 +555,16 @@ pub async fn load_inventory_with_overrides(
             for (k, v) in set_vars {
                 vars.insert(k.clone(), Value::String(v.clone()));
             }
+        }
+    }
+    for (hname, hvars) in &flat.host_vars {
+        if let Some(cv) = hvars.get("cert_validity")
+            && !cv.is_null()
+            && cv.as_str().is_none_or(|s| !s.trim().is_empty())
+        {
+            crate::cert::parse_duration_value(cv).map_err(|e| {
+                RtkkError::Inventory(format!("invalid cert_validity on host '{hname}': {e}"))
+            })?;
         }
     }
     crate::playbook::inject_dynamic_inventory_vars(&flat.groups, &mut flat.host_vars);
@@ -718,6 +738,7 @@ async fn dispatch_push_images(
     inventory: String,
     images_file: Option<String>,
     output_dir: Option<String>,
+    retag: bool,
 ) -> Result<(), RtkkError> {
     let has_tar = tar_path.as_ref().is_some_and(|s| !s.trim().is_empty());
     let has_list = images_file.as_ref().is_some_and(|s| !s.trim().is_empty());
@@ -741,7 +762,7 @@ async fn dispatch_push_images(
                         .to_string(),
                 ));
             }
-            crate::registry::execute_push_images(&tar, &inventory)
+            crate::registry::execute_push_images_with_retag(&tar, &inventory, retag)
                 .await
                 .map_err(RtkkError::Registry)
         }
@@ -755,6 +776,7 @@ async fn dispatch_push_images(
                 inventory_path: inventory,
                 images_file: list,
                 output_dir,
+                retag,
             };
             crate::registry::execute_push_images_batch(&opts)
                 .await
@@ -837,7 +859,8 @@ pub async fn dispatch_command(command: Commands) -> Result<(), RtkkError> {
             inventory,
             images_file,
             output_dir,
-        } => dispatch_push_images(tar_path, inventory, images_file, output_dir).await,
+            retag,
+        } => dispatch_push_images(tar_path, inventory, images_file, output_dir, retag).await,
         Commands::PullImages {
             inventory,
             images_file,

@@ -36,7 +36,7 @@
 | `rtkk cert gen --cn <CN> --out-key <KEY> --out-cert <CERT> [--ca] [--ca-key K --ca-cert C] [--san S] [--validity V] [--policy P]` | 已交付 | 签发 ECDSA P-256 根 CA 或叶证书（默认 `867240h` = 99 年，私钥 `0600`） |
 | `rtkk cert verify <CERT> [--key <KEY>] [--ca <CA_CERT>]` | 已交付 | 校验 X.509 证书有效期、公私钥匹配与上级 CA 签名链 |
 | `rtkk pull-images -i <INVENTORY> --images-file <IMAGES> [--output-dir D] [--platform P] [--force] [--insecure]` | 已交付 | 纯 Rust 拉取 OCI 镜像至本地 `docker-legacy` `.tar`（含 `rtkk-media.json`） |
-| `rtkk push-images [<TAR>] -i <INVENTORY> [--images-file <IMAGES>] [--output-dir D]` | 已交付 | 单包或批量推送本地镜像 `.tar` 至私有镜像仓库（互斥 XOR 模式） |
+| `rtkk push-images [<TAR>] -i <INVENTORY> [--images-file <IMAGES>] [--output-dir D] [--retag]` | 已交付 | 单包或批量推送本地镜像 `.tar` 至私有镜像仓库（互斥 XOR 模式，支持跨私库自动重标推送） |
 | `rtkk sync-images -i <INVENTORY> --images-file <IMAGES> [--output-dir D] [--platform P] [--force] [--insecure]` | 已交付 | 一体化拉取上游镜像并推送至目标私库 |
 | `rtkk serve [--listen 127.0.0.1:19912] [--work-dir .] [--token-file .rtkk-daemon/admin.token]` | Step 02 | 启动常驻 HTTP/SSE 管理服务与内嵌 Park UI 控制台 |
 | `rtkk healthcheck [--url http://127.0.0.1:19912/api/v1/health]` | Step 02 | 容器与自动化脚本探活子命令（健康返回 `0`，异常返回 `1`） |

@@ -87,7 +87,7 @@ for ip in 10.0.0.61 10.0.0.62 10.0.0.63 10.0.0.64 10.0.0.65 10.0.0.66; do
 done
 ```
 
-随后编辑 `configs/inventory.yaml`，配置显式私钥路径并移除明文 `ansible_ssh_pass`：
+随后编辑 `configs/inventory.yaml`，配置显式私钥路径（运行时自动将前导 `~/` 展开为 `$HOME/`）并移除明文 `ansible_ssh_pass`：
 
 ```yaml
 vars:
@@ -131,7 +131,7 @@ printf '%s:%s' 'admin' '<STRONG_PASSWORD>' | base64 -w0 && echo
 2. **Go `time.Duration` 溢出上限保护**：Kubernetes、etcd、containerd、Cilium 等核心组件均由 Go 编写，其标准库 `time.Duration` 为有符号 64 位纳秒整数（最大上限约 `292.47` 年，即约 `2562047h`）。`867240h`（99 年）处于安全区间内，且 `rtkk` 对有效期参数实施安全边界校验，防止配置超大值引发 Go 组件整数溢出。
 3. **叶证书到期时间自动截齐（Leaf `not_after <= ca.not_after`）**：使用已有根 CA 签发业务叶证书时，若目标有效期的计算截止时刻晚于 CA 证书自身的 `not_after`（例如 CA 已运行若干天后再扩容新节点），`rtkk` 会自动将叶证书的 `not_after` 截齐至不超过 `ca.not_after`，保证证书链生命周期逻辑严密。
 4. **ECDSA P-256 与 RFC 5480 `KeyUsage` 严格合规**：全链路采用 ECDSA P-256 椭圆曲线密钥；CA 证书严格限定 `KeyCertSign | CrlSign` 与 `BasicConstraints(CA=true)`，服务端/客户端叶证书精确设置 `DigitalSignature` 及对应的 `ServerAuth` / `ClientAuth` 扩展密钥用法（EKU），符合现代 Go `crypto/x509` 与 OpenSSL 3（Debian 13 默认搭载）的严格校检要求。
-5. **`kubeadm` `v1beta4` 有效期同步对齐**：`configs/templates/` 中的 `kubeadm` 配置采用 `kubeadm.k8s.io/v1beta4` API，将 `caCertificateValidityPeriod` 与控制面组件 `certificateValidityPeriod` 与集群证书有效期同步对齐，确保 `kubeadm init` 签发的控制面证书遵循同一生命周期策略。
+5. **`kubeadm` `v1beta4` 有效期同步对齐**：`rtkk` 加载 Inventory 与渲染模板时自动将 `cert_validity`（含 `"1y"`、`"10y"`、`"100y"`、`"365d"` 等年/天单位）统一换算为 Go `time.Duration` 兼容的小时字符串（注入 `cert_validity_hours_str` 及 `durationHours` 模板函数），同步对齐 `caCertificateValidityPeriod` 与 `certificateValidityPeriod`，确保 `kubeadm init` 签发的控制面证书遵循同一生命周期策略。
 6. **Cilium / Hubble 网络平面证书协调**：Cilium 与 Hubble 组件按部署模板采用协调一致的动态证书机制，避免控制面长效而网络数据面证书短期失效。
 
 ### 2.2 按需切换为 1 年期或多年期轮转策略
