@@ -10,6 +10,13 @@ on:
         description: "Release version (with or without v prefix); must match package version"
         required: true
         type: string
+    secrets:
+      DOCKERHUB_USERNAME:
+        description: "Docker Hub username for pushing dex2all/rtkk"
+        required: false
+      DOCKERHUB_TOKEN:
+        description: "Docker Hub access token for pushing dex2all/rtkk"
+        required: false
 
 permissions:
   contents: write
@@ -61,7 +68,7 @@ jobs:
       - name: Pull latest Debian 13
         run: docker pull debian:13
 
-      - name: Build rtkk in Debian 13
+      - name: Build rtkk (with embedded WebUI) in Debian 13
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE":/src \
@@ -71,18 +78,23 @@ jobs:
             debian:13 \
             bash .github/scripts/release/debian13-build.sh release
 
-      - name: Package tarball
+      - name: Package release and compose tarballs
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
         run: |
           set -euo pipefail
           chmod +x .github/scripts/release/pack-release.sh
           ./.github/scripts/release/pack-release.sh \
             --name rtkk \
-            --version "${{ needs.meta.outputs.version }}" \
+            --version "${VERSION}" \
             --os linux \
             --arch amd64 \
             --outdir dist/release \
             --bin target/release/rtkk \
-            --configs configs
+            --configs configs \
+            --compose deploy/compose
+          test -f "dist/release/rtkk_${VERSION}_linux_amd64.tar.gz"
+          test -f "dist/release/rtkk_${VERSION}_compose.tar.gz"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
@@ -91,8 +103,116 @@ jobs:
           path: dist/release/*.tar.gz
           if-no-files-found: error
 
-  publish:
+  docker:
     needs: [meta, build]
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: rtkk-x86_64-unknown-linux-gnu
+          path: artifacts
+
+      - name: Stage Debian 13 binary
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          STAGE_TMP="$(mktemp -d)"
+          tar -xzf "artifacts/rtkk_${VERSION}_linux_amd64.tar.gz" -C "$STAGE_TMP"
+          mkdir -p target/release
+          install -m 0755 "${STAGE_TMP}/rtkk" target/release/rtkk
+          rm -rf "$STAGE_TMP"
+          ./target/release/rtkk --version
+
+      - name: Build Docker image
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker pull debian:13-slim
+          TAGS=(-t "dex2all/rtkk:${VERSION}")
+          if [[ "$VERSION" != *-* ]]; then
+            TAGS+=(-t "dex2all/rtkk:latest")
+          fi
+          docker build -f deploy/docker/Dockerfile "${TAGS[@]}" .
+
+      - name: Verify container health and embedded WebUI
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          CID="rtkk-release-smoke-$$"
+          SMOKE_TMP="$(mktemp -d)"
+          cleanup() {
+            docker logs "$CID" 2>&1 || true
+            docker rm -f "$CID" >/dev/null 2>&1 || true
+            rm -rf "$SMOKE_TMP"
+          }
+          trap cleanup EXIT
+
+          docker run -d --name "$CID" -p 127.0.0.1:19912:19912 "dex2all/rtkk:${VERSION}"
+
+          ready=0
+          for _ in $(seq 1 30); do
+            if docker exec "$CID" /usr/local/bin/rtkk healthcheck --url http://127.0.0.1:19912/api/v1/health >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "container healthcheck did not pass within 30s" >&2
+            exit 1
+          fi
+
+          health_code="$(curl -sS -o "${SMOKE_TMP}/health.json" -w '%{http_code}' http://127.0.0.1:19912/api/v1/health)"
+          if [ "$health_code" != "200" ]; then
+            echo "expected /api/v1/health HTTP 200, got ${health_code}" >&2
+            exit 1
+          fi
+          jq -e --arg v "$VERSION" '.status == "ok" and .version == $v' "${SMOKE_TMP}/health.json" >/dev/null
+
+          index_code="$(curl -sS -o "${SMOKE_TMP}/index.html" -w '%{http_code}' http://127.0.0.1:19912/)"
+          if [ "$index_code" != "200" ]; then
+            echo "expected / HTTP 200, got ${index_code}" >&2
+            exit 1
+          fi
+          grep -qi '<!doctype html' "${SMOKE_TMP}/index.html"
+          if grep -q 'RTKK Daemon Ready' "${SMOKE_TMP}/index.html"; then
+            echo "fallback HTML detected instead of compiled web/dist/ SPA" >&2
+            exit 1
+          fi
+
+          docker stop "$CID" >/dev/null
+          docker rm -f "$CID" >/dev/null
+          rm -rf "$SMOKE_TMP"
+          trap - EXIT
+          echo "Container smoke gate passed (:19912 health + embedded WebUI)"
+
+      - name: Push image to Docker Hub
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DOCKERHUB_USERNAME:-}" ] || [ -z "${DOCKERHUB_TOKEN:-}" ]; then
+            echo "DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets are required to push dex2all/rtkk" >&2
+            exit 1
+          fi
+          printf '%s\n' "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+          trap 'docker logout >/dev/null 2>&1 || true' EXIT
+          docker push "dex2all/rtkk:${VERSION}"
+          if [[ "$VERSION" != *-* ]]; then
+            docker push "dex2all/rtkk:latest"
+          fi
+
+  publish:
+    needs: [meta, build, docker]
     runs-on: ubuntu-26.04
     steps:
       - name: Checkout
@@ -109,10 +229,14 @@ jobs:
         run: find artifacts -type f | sort
 
       - name: Checksums and installer
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
         run: |
           set -euo pipefail
           mkdir -p dist
           cp artifacts/*.tar.gz dist/
+          test -f "dist/rtkk_${VERSION}_linux_amd64.tar.gz"
+          test -f "dist/rtkk_${VERSION}_compose.tar.gz"
           cp .github/scripts/install/install.sh dist/install.sh
           chmod +x dist/install.sh
           (
@@ -135,19 +259,21 @@ jobs:
             dist/SHA256SUMS
             dist/install.sh
           body: |
-            Only Linux x86_64 is published. The binary is built in the latest `debian:13` image and is tested on Debian 13.
+            Linux `x86_64` binary (`debian:13`) and container release (`debian:13-slim`, `:19912`).
 
-            Install:
+            ### CLI Binary
+
+            Install latest:
 
             ```shell
             curl -fsSL https://github.com/jjdufu/rtkk/releases/latest/download/install.sh | bash
             rtkk --version
             ```
 
-            Pin this release:
+            Pin `v${{ needs.meta.outputs.version }}`:
 
             ```shell
-            curl -fsSL https://github.com/jjdufu/rtkk/releases/latest/download/install.sh | bash -s -- ${{ needs.meta.outputs.version }}
+            curl -fsSL https://github.com/jjdufu/rtkk/releases/download/v${{ needs.meta.outputs.version }}/install.sh | bash -s -- ${{ needs.meta.outputs.version }}
             rtkk --version
             ```
 
@@ -157,9 +283,23 @@ jobs:
             curl -fsSL https://github.com/jjdufu/rtkk/releases/latest/download/install.sh | bash -s -- --uninstall
             ```
 
-            Archive: `rtkk_${{ needs.meta.outputs.version }}_linux_amd64.tar.gz`
+            ### Docker Compose (`:19912`)
 
-            The tarball contains the `rtkk` binary and example `configs/`.
-            `install.sh` only installs the binary.
+            Image: `dex2all/rtkk:${{ needs.meta.outputs.version }}`
+
+            ```shell
+            mkdir -p rtkk-compose
+            curl -fsSL https://github.com/jjdufu/rtkk/releases/download/v${{ needs.meta.outputs.version }}/rtkk_${{ needs.meta.outputs.version }}_compose.tar.gz | tar -xz -C rtkk-compose
+            cd rtkk-compose
+            ./scripts/start.sh
+            ./scripts/status.sh
+            ```
+
+            ### Release Assets
+
+            - `rtkk_${{ needs.meta.outputs.version }}_linux_amd64.tar.gz` — `rtkk` binary (embedded WebUI) and `configs/`
+            - `rtkk_${{ needs.meta.outputs.version }}_compose.tar.gz` — standalone Docker Compose stack (`:19912`)
+            - `install.sh` — binary installer
+            - `SHA256SUMS` — SHA-256 checksums
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

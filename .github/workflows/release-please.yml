@@ -92,7 +92,9 @@ jobs:
           fi
 
   # GITHUB_TOKEN cannot trigger other workflows via tag/release events.
-  # Call pack in this same run so binaries attach to the Release RP just created.
+  # Invoke release.yml in this same run with inherited repository secrets
+  # (DOCKERHUB_USERNAME, DOCKERHUB_TOKEN) to build Debian 13 artifacts,
+  # verify and push dex2all/rtkk to Docker Hub, and attach GitHub Release assets.
   release:
     needs: release-please
     if: always() && !cancelled() && needs.release-please.outputs.pack == 'true'
