@@ -470,6 +470,14 @@ impl<'a> PushSession<'a> {
                     }
                     buf.truncate(n);
                     uploaded = uploaded.saturating_add(n);
+                    let _ = crate::logging::emit_event(
+                        crate::logging::ExecutionEvent::ArtifactProgress {
+                            item: task_label.clone(),
+                            bytes_done: u64::try_from(uploaded).unwrap_or(u64::MAX),
+                            bytes_total: u64::try_from(total).ok(),
+                            phase: "push_blob".to_string(),
+                        },
+                    );
                     if let Some(pct) = uploaded.checked_mul(100).and_then(|p| p.checked_div(total))
                     {
                         let uploaded_mb = crate::utils::usize_to_f64(uploaded) / (1024.0 * 1024.0);

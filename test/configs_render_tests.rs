@@ -987,3 +987,50 @@ fn verify_debian13_preflight_conditions(
         "apt-get task must skip when auto_install_apt_deps is false",
     )
 }
+
+#[test]
+fn public_registries_hijack_hosts_toml() -> Result<(), String> {
+    let pb = compile_playbook(&configs_dir().join("deploy.yaml"))?;
+    let mut copy_tmpl: Option<String> = None;
+    for play in &pb.0 {
+        if let Some(ref tasks) = play.tasks {
+            for t in tasks {
+                if t.name
+                    .as_deref()
+                    .is_some_and(|n| n.contains("hosts.toml for public registries"))
+                    && let Some(ref c) = t.copy
+                    && let Some(s) = c.get("content").and_then(Value::as_str)
+                {
+                    copy_tmpl = Some(s.to_string());
+                }
+            }
+        }
+    }
+    let tmpl = copy_tmpl.ok_or("missing public registries hosts.toml task in deploy.yaml")?;
+
+    // Default strict HTTPS mode (public_registries_insecure: false)
+    let strict_ctx = json_to_gtmpl(&json!({
+        "item": "docker.io",
+        "public_registries_insecure": false
+    }));
+    let strict_out = render_template_string(&tmpl, &strict_ctx)?;
+    ensure(
+        strict_out.contains("[host.\"https://docker.io\"]")
+            && !strict_out.contains("skip_verify = true")
+            && !strict_out.contains("[host.\"http://docker.io\"]"),
+        &format!("strict public hosts.toml must not enable skip_verify or HTTP: {strict_out}"),
+    )?;
+
+    // LAN DNS hijack mode (public_registries_insecure: true)
+    let hijack_ctx = json_to_gtmpl(&json!({
+        "item": "docker.io",
+        "public_registries_insecure": true
+    }));
+    let hijack_out = render_template_string(&tmpl, &hijack_ctx)?;
+    ensure(
+        hijack_out.contains("[host.\"https://docker.io\"]")
+            && hijack_out.contains("[host.\"http://docker.io\"]")
+            && hijack_out.contains("skip_verify = true"),
+        &format!("hijack public hosts.toml must render dual-stack skip_verify: {hijack_out}"),
+    )
+}

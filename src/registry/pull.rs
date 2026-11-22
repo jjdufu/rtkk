@@ -416,6 +416,12 @@ async fn stream_and_verify_blob(
             .await
             .map_err(|e| format!("write blob failed: {e}"))?;
         downloaded = downloaded.saturating_add(u64::try_from(chunk.len()).unwrap_or(0));
+        let _ = crate::logging::emit_event(crate::logging::ExecutionEvent::ArtifactProgress {
+            item: progress_label.to_string(),
+            bytes_done: downloaded,
+            bytes_total: (total > 0).then_some(total),
+            phase: "pull_blob".to_string(),
+        });
         if let Some(pct_u64) = downloaded.saturating_mul(100).checked_div(total) {
             let pct = u32::try_from(pct_u64).unwrap_or(0);
             let downloaded_mb = crate::utils::u64_to_f64(downloaded) / (1024.0 * 1024.0);
@@ -676,37 +682,42 @@ async fn download_blobs(
         .await?;
     let gate = Arc::new(Semaphore::new(layer_concurrency.max(1)));
     let mut join_set = JoinSet::new();
+    let parent_sink = crate::logging::current_event_sink();
     for (idx, layer) in manifest.layers.iter().enumerate() {
         let sem = Arc::clone(&gate);
         let w = Arc::clone(worker);
         let layer_digest = layer.digest.clone();
         let layer_mt_opt = layer.media_type.clone();
         let layer_path = temp_guard.path().join(format!("layer-{idx}.bin"));
+        let layer_sink = parent_sink.clone();
         join_set.spawn(async move {
-            let _permit = sem
-                .acquire_owned()
-                .await
-                .map_err(|e| format!("layer concurrency semaphore closed: {e}"))?;
-            w.download_blob_to_file(&layer_digest, &layer_path, &format!("layer-{idx}"))
-                .await?;
-            let media_type = layer_mt_opt.unwrap_or_else(|| {
-                let default_mt = if prefer_oci {
-                    super::media::OCI_LAYER_GZIP
-                } else {
-                    super::media::DOCKER_LAYER_GZIP
-                };
-                super::media::sniff_layer_media_type_from_path(&layer_path, prefer_oci)
-                    .unwrap_or(default_mt)
-                    .to_string()
-            });
-            Ok::<(usize, PulledLayer), String>((
-                idx,
-                PulledLayer {
-                    digest: layer_digest,
-                    path: layer_path,
-                    media_type,
-                },
-            ))
+            crate::logging::with_optional_event_sink(layer_sink, async move {
+                let _permit = sem
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| format!("layer concurrency semaphore closed: {e}"))?;
+                w.download_blob_to_file(&layer_digest, &layer_path, &format!("layer-{idx}"))
+                    .await?;
+                let media_type = layer_mt_opt.unwrap_or_else(|| {
+                    let default_mt = if prefer_oci {
+                        super::media::OCI_LAYER_GZIP
+                    } else {
+                        super::media::DOCKER_LAYER_GZIP
+                    };
+                    super::media::sniff_layer_media_type_from_path(&layer_path, prefer_oci)
+                        .unwrap_or(default_mt)
+                        .to_string()
+                });
+                Ok::<(usize, PulledLayer), String>((
+                    idx,
+                    PulledLayer {
+                        digest: layer_digest,
+                        path: layer_path,
+                        media_type,
+                    },
+                ))
+            })
+            .await
         });
     }
     let mut indexed_layers = Vec::with_capacity(manifest.layers.len());

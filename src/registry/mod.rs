@@ -209,8 +209,357 @@ pub async fn execute_push_images(tar_path: &str, inventory_path: &str) -> Result
     crate::log_println!("Starting pure-Rust HTTP API upload for {tar_path}...");
     push_images_inner(tar_path, &registry, policy, sync.http_timeout_secs).await?;
     crate::log_println!("Successfully pushed images to registry.");
-    crate::logging::shutdown_logging();
     Ok(())
+}
+
+/// Local on-disk inspection result for an expected image `.tar` archive.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LocalImageTarStatus {
+    /// Full path to `<output_dir>/<name>.tar`.
+    pub path: std::path::PathBuf,
+    /// Whether the `.tar` file exists on disk.
+    pub exists: bool,
+    /// File size in bytes (`0` when absent).
+    pub size_bytes: u64,
+    /// Whether `manifest.json` contains `spec.target`.
+    pub repo_tags_matched: bool,
+    /// Whether `rtkk-media.json` matches `spec.source`.
+    pub has_media_manifest: bool,
+}
+
+/// Inspects `<output_dir>/<spec.name>.tar` against `spec.target` and `spec.source`.
+#[must_use]
+pub fn inspect_local_image_tar(output_dir: &str, spec: &ImageSpec) -> LocalImageTarStatus {
+    let path = legacy_write::image_tar_path(output_dir, &spec.name);
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return LocalImageTarStatus {
+            path,
+            exists: false,
+            size_bytes: 0,
+            repo_tags_matched: false,
+            has_media_manifest: false,
+        };
+    };
+    if !meta.is_file() {
+        return LocalImageTarStatus {
+            path,
+            exists: false,
+            size_bytes: 0,
+            repo_tags_matched: false,
+            has_media_manifest: false,
+        };
+    }
+    let repo_tags_matched =
+        legacy_write::existing_tar_matches(&path, &spec.target, None).unwrap_or(false);
+    let has_media_manifest =
+        legacy_write::existing_tar_matches(&path, &spec.target, Some(&spec.source))
+            .unwrap_or(false);
+    LocalImageTarStatus {
+        path,
+        exists: true,
+        size_bytes: meta.len(),
+        repo_tags_matched,
+        has_media_manifest,
+    }
+}
+
+/// Read-only connectivity and authentication diagnostic report for a target registry.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RegistryPingReport {
+    /// Whether `/v2/` was reachable and authenticated (if credentials were required).
+    pub reachable: bool,
+    /// Resolved transport scheme (`"https"` or `"http"`).
+    pub resolved_scheme: String,
+    /// Negotiated authentication mode (`"anonymous"`, `"basic"`, `"bearer"`, or `"failed"`).
+    pub auth_mode: String,
+    /// Whether Harbor v2 `/api/v2.0/projects` responded.
+    pub is_harbor: bool,
+    /// Parsed top-level project/namespace from `registry.url`.
+    pub project: String,
+    /// Whether `project` already exists on Harbor (or `true` for plain OCI v2).
+    pub project_exists: bool,
+    /// Total probe duration in milliseconds.
+    pub latency_ms: u64,
+    /// Human-readable status detail.
+    pub detail: String,
+}
+
+fn split_registry_domain_and_project(raw_url: &str) -> (String, String) {
+    let clean = client::normalize_registry_host_prefix(raw_url);
+    match clean.split_once('/') {
+        Some((dom, rest)) => (
+            dom.to_string(),
+            rest.split('/').next().unwrap_or("").to_string(),
+        ),
+        None => (clean.to_string(), String::new()),
+    }
+}
+
+async fn check_harbor_project(
+    http_client: &reqwest::Client,
+    base_url: &str,
+    project: &str,
+    creds: Option<(&str, &str)>,
+) -> (bool, bool) {
+    if project.is_empty() {
+        return (false, true);
+    }
+    let url = format!("{base_url}/api/v2.0/projects?name={project}");
+    let mut req = http_client.get(&url);
+    if let Some((u, p)) = creds {
+        req = req.basic_auth(u, Some(p));
+    }
+    let Ok(res) = req.send().await else {
+        return (false, false);
+    };
+    if !res.status().is_success() {
+        return (false, false);
+    }
+    let Ok(items) = res.json::<Vec<Value>>().await else {
+        return (true, false);
+    };
+    let exists = items
+        .iter()
+        .any(|item| item.get("name").and_then(Value::as_str) == Some(project));
+    (true, exists)
+}
+
+async fn negotiate_v2_ping_auth(
+    http_client: &reqwest::Client,
+    v2_url: &str,
+    project: &str,
+    initial_res: reqwest::Response,
+    creds: Option<(&str, &str)>,
+) -> (bool, String, String) {
+    if initial_res.status().is_success() {
+        return (
+            true,
+            "anonymous".to_string(),
+            "OCI /v2/ reachable".to_string(),
+        );
+    }
+    if initial_res.status() != reqwest::StatusCode::UNAUTHORIZED {
+        return (
+            false,
+            "failed".to_string(),
+            format!("Unexpected /v2/ status {}", initial_res.status()),
+        );
+    }
+    let www = initial_res
+        .headers()
+        .get(reqwest::header::WWW_AUTHENTICATE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let (scheme_kind, _params) = client::parse_www_authenticate_bearer(&www);
+    if scheme_kind == "bearer" {
+        let probe_repo = if project.is_empty() {
+            "library/pause".to_string()
+        } else {
+            format!("{project}/pause")
+        };
+        match client::fetch_bearer_token(http_client, &www, &probe_repo, "pull", creds).await {
+            Ok(tok) => {
+                let replay = http_client.get(v2_url).bearer_auth(tok).send().await;
+                let ok = replay.is_ok_and(|r| r.status().is_success());
+                (
+                    ok,
+                    "bearer".to_string(),
+                    if ok {
+                        "Bearer token negotiated".to_string()
+                    } else {
+                        "Bearer replay rejected".to_string()
+                    },
+                )
+            }
+            Err(e) => (false, "bearer".to_string(), e),
+        }
+    } else if let Some((u, p)) = creds {
+        let replay = http_client.get(v2_url).basic_auth(u, Some(p)).send().await;
+        let ok = replay.is_ok_and(|r| r.status().is_success());
+        (
+            ok,
+            "basic".to_string(),
+            if ok {
+                "Basic auth verified".to_string()
+            } else {
+                "Basic credentials rejected".to_string()
+            },
+        )
+    } else {
+        (
+            false,
+            "unauthorized".to_string(),
+            "Registry requires credentials".to_string(),
+        )
+    }
+}
+
+/// Probes `registry` `/v2/` transport, Basic/Bearer challenge-response, and Harbor project status.
+pub async fn ping_registry_endpoint(registry: &RegistryConfig) -> RegistryPingReport {
+    let started = std::time::Instant::now();
+    let elapsed_ms =
+        |s: std::time::Instant| u64::try_from(s.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let (domain, project) = split_registry_domain_and_project(&registry.url);
+    let http_client =
+        match build_http_client(registry.insecure, 10, registry.ca_cert_file.as_deref()) {
+            Ok(c) => c,
+            Err(e) => {
+                return RegistryPingReport {
+                    reachable: false,
+                    resolved_scheme: String::new(),
+                    auth_mode: "failed".to_string(),
+                    is_harbor: false,
+                    project,
+                    project_exists: false,
+                    latency_ms: elapsed_ms(started),
+                    detail: e,
+                };
+            }
+        };
+
+    let base_url = match client::probe_registry_base_url(&http_client, &domain, registry).await {
+        Ok(u) => u,
+        Err(e) => {
+            return RegistryPingReport {
+                reachable: false,
+                resolved_scheme: String::new(),
+                auth_mode: "failed".to_string(),
+                is_harbor: false,
+                project,
+                project_exists: false,
+                latency_ms: elapsed_ms(started),
+                detail: e,
+            };
+        }
+    };
+    let resolved_scheme = if base_url.starts_with("https://") {
+        "https".to_string()
+    } else {
+        "http".to_string()
+    };
+    let creds = match (&registry.username, &registry.password) {
+        (Some(u), Some(p)) if !u.is_empty() => Some((u.as_str(), p.as_str())),
+        _ => None,
+    };
+
+    let v2_url = format!("{base_url}/v2/");
+    let Ok(initial_res) = http_client.get(&v2_url).send().await else {
+        return RegistryPingReport {
+            reachable: false,
+            resolved_scheme,
+            auth_mode: "failed".to_string(),
+            is_harbor: false,
+            project,
+            project_exists: false,
+            latency_ms: elapsed_ms(started),
+            detail: format!("GET {v2_url} failed"),
+        };
+    };
+
+    let (authed_ok, auth_mode, detail) =
+        negotiate_v2_ping_auth(&http_client, &v2_url, &project, initial_res, creds).await;
+
+    let (is_harbor, project_exists) =
+        check_harbor_project(&http_client, &base_url, &project, creds).await;
+    RegistryPingReport {
+        reachable: authed_ok,
+        resolved_scheme,
+        auth_mode,
+        is_harbor,
+        project,
+        project_exists: if is_harbor { project_exists } else { authed_ok },
+        latency_ms: elapsed_ms(started),
+        detail,
+    }
+}
+
+fn filter_image_specs(
+    specs: Vec<ImageSpec>,
+    wanted_names: &[String],
+) -> Result<Vec<ImageSpec>, String> {
+    if wanted_names.is_empty() {
+        return Ok(specs);
+    }
+    for name in wanted_names {
+        if !crate::utils::is_safe_module_name(name) {
+            return Err(format!("unsafe image name filter: '{name}'"));
+        }
+    }
+    let filtered: Vec<ImageSpec> = specs
+        .into_iter()
+        .filter(|s| wanted_names.iter().any(|w| w == &s.name))
+        .collect();
+    if filtered.is_empty() {
+        return Err("none of the requested image_names matched images.yaml".to_string());
+    }
+    Ok(filtered)
+}
+
+/// Pulls either all images or a named subset (`image_names`) into `<output_dir>/<name>.tar`.
+///
+/// # Errors
+///
+/// Returns an error if inventory/image list parsing fails, `image_names` contains unsafe names,
+/// or pulling any selected image fails.
+pub async fn execute_pull_images_filtered(
+    opts: &PullImagesOptions,
+    image_names: &[String],
+) -> Result<(), String> {
+    let doc = parse_inventory_doc(&opts.inventory_path).await?;
+    let registry = image_list::registry_from_doc(&doc)?;
+    let (vars, mut sync) = image_list::extract_vars_and_sync(&doc)?;
+    if let Some(ref d) = opts.output_dir {
+        sync.output_dir.clone_from(d);
+    }
+    if let Some(ref p) = opts.platform {
+        sync.platform.clone_from(p);
+    }
+    if let Some(ins) = opts.insecure {
+        sync.insecure = ins;
+    }
+    let all_specs = image_list::load_image_specs(&opts.images_file, &vars)?;
+    let specs = filter_image_specs(all_specs, image_names)?;
+    pull_all_images(&specs, &sync, &registry, opts.force).await?;
+    Ok(())
+}
+
+/// Pushes either all images or a named subset (`image_names`) from `<output_dir>` to `registry`.
+///
+/// # Errors
+///
+/// Returns an error if any selected `.tar` archive is missing/invalid or registry upload fails.
+pub async fn execute_push_images_filtered(
+    opts: &PushImagesBatchOptions,
+    image_names: &[String],
+) -> Result<(), String> {
+    let doc = parse_inventory_doc(&opts.inventory_path).await?;
+    let registry = image_list::registry_from_doc(&doc)?;
+    let (vars, mut sync) = image_list::extract_vars_and_sync(&doc)?;
+    if let Some(ref d) = opts.output_dir {
+        sync.output_dir.clone_from(d);
+    }
+    let all_specs = image_list::load_image_specs(&opts.images_file, &vars)?;
+    let specs = filter_image_specs(all_specs, image_names)?;
+    push_specs_from_output_dir(&specs, &sync.output_dir, &registry, sync.http_timeout_secs).await?;
+    crate::log_println!(
+        "Successfully pushed {} image tar(s) to registry.",
+        specs.len()
+    );
+    Ok(())
+}
+
+/// Loads and renders [`ImageSpec`] entries from `images_path` against raw inventory YAML `doc`.
+///
+/// # Errors
+///
+/// Returns an error if `vars` is missing from `doc` or if `images_path` fails to read or render.
+pub fn load_rendered_image_specs_from_doc(
+    doc: &Value,
+    images_path: &Path,
+) -> Result<Vec<ImageSpec>, String> {
+    let (vars, _) = image_list::extract_vars_and_sync(doc)?;
+    image_list::load_image_specs(&images_path.to_string_lossy(), &vars)
 }
 
 /// Batch-pushes all `.tar` archives listed in an `images.yaml` manifest from the output directory.
@@ -232,7 +581,6 @@ pub async fn execute_push_images_batch(opts: &PushImagesBatchOptions) -> Result<
         "Successfully pushed {} image tar(s) to registry.",
         specs.len()
     );
-    crate::logging::shutdown_logging();
     Ok(())
 }
 
@@ -302,7 +650,6 @@ pub async fn execute_pull_images(opts: &PullImagesOptions) -> Result<(), String>
     }
     let specs = image_list::load_image_specs(&opts.images_file, &vars)?;
     pull_all_images(&specs, &sync, &registry, opts.force).await?;
-    crate::logging::shutdown_logging();
     Ok(())
 }
 
@@ -329,7 +676,6 @@ pub async fn execute_sync_images(opts: &PullImagesOptions) -> Result<(), String>
     pull_all_images(&specs, &sync, &registry, opts.force).await?;
     push_specs_from_output_dir(&specs, &sync.output_dir, &registry, sync.http_timeout_secs).await?;
     crate::log_println!("Successfully synced {} image(s) to registry.", specs.len());
-    crate::logging::shutdown_logging();
     Ok(())
 }
 

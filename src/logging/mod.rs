@@ -1,5 +1,6 @@
-//! Structured file logging and interactive terminal progress tracking.
+//! Structured file logging, task-scoped [`EventSink`] routing, and interactive `TTY` progress tracking.
 
+use std::future::Future;
 use std::io::IsTerminal as _;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,15 +9,64 @@ use std::time::Duration;
 use tracing_appender::non_blocking;
 use tracing_subscriber::{Registry, prelude::*};
 
+/// Structured execution event definitions and pluggable sinks.
+pub mod events;
 pub(crate) mod progress;
 
+pub use events::{CompositeSink, EventSink, ExecutionEvent, MemoryCaptureSink, NoopSink};
 use progress::{ProgressTracker, TaskProgress, TaskStatus};
+
+tokio::task_local! {
+    static SCOPED_EVENT_SINK: Arc<dyn EventSink>;
+}
 
 static ACTIVE_WRITER: Mutex<Option<non_blocking::NonBlocking>> = Mutex::new(None);
 static WORKER_GUARD: Mutex<Option<non_blocking::WorkerGuard>> = Mutex::new(None);
 static PROGRESS_TRACKER: OnceLock<Arc<Mutex<ProgressTracker>>> = OnceLock::new();
 static PROGRESS_LOOP_STARTED: AtomicBool = AtomicBool::new(false);
 static SHUTDOWN_LOGGER: AtomicBool = AtomicBool::new(false);
+
+/// Executes `fut` with `sink` bound as the task-local [`EventSink`].
+///
+/// While a task-local sink is active, `log_println!`, task lifecycle notifications, and
+/// registry transfer updates route exclusively to `sink` without polluting global terminal output.
+pub async fn with_event_sink<F>(sink: Arc<dyn EventSink>, fut: F) -> F::Output
+where
+    F: Future,
+{
+    SCOPED_EVENT_SINK.scope(sink, fut).await
+}
+
+/// Executes `fut` under `sink` when `Some`, or directly when `None` (preserving any outer sink).
+pub async fn with_optional_event_sink<F>(sink: Option<Arc<dyn EventSink>>, fut: F) -> F::Output
+where
+    F: Future,
+{
+    if let Some(s) = sink {
+        SCOPED_EVENT_SINK.scope(s, fut).await
+    } else if let Some(inherited) = current_event_sink() {
+        SCOPED_EVENT_SINK.scope(inherited, fut).await
+    } else {
+        fut.await
+    }
+}
+
+/// Returns a clone of the currently bound task-local [`EventSink`], if any.
+#[must_use]
+pub fn current_event_sink() -> Option<Arc<dyn EventSink>> {
+    SCOPED_EVENT_SINK.try_with(Arc::clone).ok()
+}
+
+/// Emits `event` to the active task-local [`EventSink`] if bound, returning `true` if delivered.
+#[must_use]
+pub fn emit_event(event: ExecutionEvent) -> bool {
+    if let Some(sink) = current_event_sink() {
+        sink.emit(event);
+        true
+    } else {
+        false
+    }
+}
 
 struct DynamicLogWriter;
 
@@ -40,15 +90,15 @@ impl std::io::Write for DynamicLogWriter {
     }
 }
 
-/// Central logger coordinating file append output and `TTY` task progress bars.
+/// Central logger coordinating file append output, task-local [`EventSink`] dispatch, and `TTY` progress bars.
 pub struct Logger;
 
 impl Logger {
     /// Initializes non-blocking file logging to `file_path` (defaulting to `"deploy.log"`)
     /// and starts interactive `TTY` progress rendering when standard output is a terminal.
     ///
-    /// Safe to call multiple times in tests: subsequent calls rotate the active log file
-    /// writer without failing if the global `tracing` subscriber is already installed.
+    /// Safe to call multiple times: subsequent calls rotate the active log file writer
+    /// without failing if the global `tracing` subscriber is already installed.
     ///
     /// # Errors
     ///
@@ -89,19 +139,29 @@ impl Logger {
         Ok(())
     }
 
-    /// Writes `msg` to the console (preserving active `TTY` progress bars) and records a
-    /// stripped plain-text entry in the log file.
+    /// Routes `msg` to the active task-local [`EventSink`] when bound; otherwise writes to
+    /// the CLI console and global log file.
     pub fn log(msg: &str) {
+        let cleaned = crate::utils::clean_ansi_escapes(msg);
+        let trimmed = cleaned.trim();
+        if let Some(sink) = current_event_sink() {
+            if !trimmed.is_empty() {
+                sink.emit(ExecutionEvent::LogLine {
+                    level: "info".to_string(),
+                    message: trimmed.to_string(),
+                });
+            }
+            return;
+        }
         let locked = PROGRESS_TRACKER.get().and_then(|arc| arc.lock().ok());
         if let Some(mut tracker) = locked {
             tracker.log_message(msg);
         } else {
             print_direct(msg);
         }
-        let cleaned = crate::utils::clean_ansi_escapes(msg);
-        let trimmed = cleaned.trim_end();
-        if !trimmed.is_empty() {
-            tracing::info!("{trimmed}");
+        let trimmed_end = cleaned.trim_end();
+        if !trimmed_end.is_empty() {
+            tracing::info!("{trimmed_end}");
         }
     }
 }
@@ -161,8 +221,11 @@ pub fn shutdown_logging() {
     }
 }
 
-/// Registers a newly started task on `host` in the interactive progress tracker.
+/// Registers a newly started task on `host` in the active [`EventSink`] or interactive `TTY` tracker.
 pub fn start_task(host: &str, task_name: &str) {
+    if current_event_sink().is_some() {
+        return;
+    }
     let Some(tracker_arc) = PROGRESS_TRACKER.get() else {
         return;
     };
@@ -185,6 +248,15 @@ pub fn start_task(host: &str, task_name: &str) {
 
 /// Updates explicit percentage completion and status `text` for a running task on `host`.
 pub fn update_task(host: &str, task_name: &str, percent: u32, text: &str) {
+    let clamped = percent.min(100);
+    if emit_event(ExecutionEvent::TaskProgress {
+        task_name: task_name.to_string(),
+        host: host.to_string(),
+        percent: clamped,
+        detail: text.to_string(),
+    }) {
+        return;
+    }
     let Some(tracker_arc) = PROGRESS_TRACKER.get() else {
         return;
     };
@@ -199,7 +271,7 @@ pub fn update_task(host: &str, task_name: &str, percent: u32, text: &str) {
                 TaskStatus::Success | TaskStatus::Failed(_) => 0,
             };
             t.status = TaskStatus::Running {
-                percent: Some(percent.min(100)),
+                percent: Some(clamped),
                 text: text.to_string(),
                 spinner_idx,
             };
@@ -209,6 +281,9 @@ pub fn update_task(host: &str, task_name: &str, percent: u32, text: &str) {
 
 /// Marks a running task on `host` as completed successfully.
 pub fn finish_task_success(host: &str, task_name: &str) {
+    if current_event_sink().is_some() {
+        return;
+    }
     let Some(tracker_arc) = PROGRESS_TRACKER.get() else {
         return;
     };
@@ -225,6 +300,9 @@ pub fn finish_task_success(host: &str, task_name: &str) {
 
 /// Marks a running task on `host` as failed with error summary `err`.
 pub fn finish_task_failed(host: &str, task_name: &str, err: &str) {
+    if current_event_sink().is_some() {
+        return;
+    }
     let Some(tracker_arc) = PROGRESS_TRACKER.get() else {
         return;
     };

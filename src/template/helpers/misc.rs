@@ -1,6 +1,6 @@
 //! Miscellaneous template helpers (`SemVer` comparison, filesystem checks, and template inclusion).
 
-use crate::template::{get_templates_registry, render_template_string};
+use crate::template::{lookup_named_template, render_template_string};
 
 fn strip_v_prefix(s: &str) -> &str {
     s.strip_prefix('v')
@@ -113,12 +113,7 @@ pub(super) fn include_fn(args: &[gtmpl::Value]) -> Result<gtmpl::Value, gtmpl::F
     let Some(ctx) = args.get(1) else {
         return Err(gtmpl::FuncError::AtLeastXArgs("include".to_string(), 2));
     };
-    let tpl_content = {
-        let guard = get_templates_registry()
-            .read()
-            .map_err(|e| gtmpl::FuncError::Generic(format!("template registry poisoned: {e}")))?;
-        guard.get(tpl_name).cloned()
-    };
+    let tpl_content = lookup_named_template(tpl_name).map_err(gtmpl::FuncError::Generic)?;
     let Some(content) = tpl_content else {
         return Err(gtmpl::FuncError::Generic(format!(
             "template '{tpl_name}' not found in registry"

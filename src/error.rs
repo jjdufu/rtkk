@@ -24,4 +24,10 @@ pub enum RtkkError {
     /// `X.509` certificate generation or verification failure.
     #[error("cert: {0}")]
     Cert(String),
+    /// Workspace directory initialization or path resolution failure.
+    #[error("workspace: {0}")]
+    Workspace(String),
+    /// Daemon `HTTP` server, authentication, or job management failure.
+    #[error("daemon: {0}")]
+    Daemon(String),
 }

@@ -251,3 +251,94 @@ pub fn compile_playbook(playbook_path: &Path) -> Result<Playbook, String> {
     register_gtmpl_directory(&base_dir.join("templates"))?;
     Ok(Playbook(raw_playbook))
 }
+
+/// Static task outline item returned by `GET /api/v1/playbooks/{name}/outline`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TaskOutline {
+    /// Human-readable task name.
+    pub name: String,
+    /// Tags attached to this task.
+    pub tags: Vec<String>,
+}
+
+/// Static play outline item returned inside [`PlaybookOutline`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PlayOutline {
+    /// Play display title.
+    pub name: String,
+    /// Host group selector expression.
+    pub hosts: String,
+    /// Expanded flat list of tasks within this play.
+    pub tasks: Vec<TaskOutline>,
+}
+
+/// Static structure summary of a compiled playbook.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PlaybookOutline {
+    /// Logical playbook identifier (`"deploy"`, `"cleanup"`, `"download"`).
+    pub name: String,
+    /// Deduplicated sorted list of all tags present in the playbook.
+    pub all_tags: Vec<String>,
+    /// Ordered plays in the playbook.
+    pub plays: Vec<PlayOutline>,
+}
+
+fn collect_task_outlines(
+    tasks: &[Task],
+    out: &mut Vec<TaskOutline>,
+    tag_set: &mut std::collections::BTreeSet<String>,
+) {
+    for t in tasks {
+        let tags = t.tags.clone().unwrap_or_default();
+        for tag in &tags {
+            tag_set.insert(tag.clone());
+        }
+        if let Some(ref b) = t.block {
+            collect_task_outlines(b, out, tag_set);
+        } else {
+            out.push(TaskOutline {
+                name: t.name.clone().unwrap_or_else(|| "unnamed task".to_string()),
+                tags,
+            });
+        }
+        if let Some(ref r) = t.rescue {
+            collect_task_outlines(r, out, tag_set);
+        }
+        if let Some(ref a) = t.always {
+            collect_task_outlines(a, out, tag_set);
+        }
+    }
+}
+
+/// Compiles `playbook_path` and extracts its static [`PlaybookOutline`].
+///
+/// # Errors
+///
+/// Returns an error if compiling the playbook or expanding its roles fails.
+pub fn extract_playbook_outline(
+    logical_name: &str,
+    playbook_path: &Path,
+) -> Result<PlaybookOutline, String> {
+    let pb = compile_playbook(playbook_path)?;
+    let mut tag_set = std::collections::BTreeSet::new();
+    let mut plays = Vec::with_capacity(pb.0.len());
+    for play in &pb.0 {
+        let mut task_outlines = Vec::new();
+        if let Some(ref tasks) = play.tasks {
+            collect_task_outlines(tasks, &mut task_outlines, &mut tag_set);
+        }
+        plays.push(PlayOutline {
+            name: play
+                .name
+                .clone()
+                .unwrap_or_else(|| "unnamed play".to_string()),
+            hosts: play.hosts.clone(),
+            tasks: task_outlines,
+        });
+    }
+    Ok(PlaybookOutline {
+        name: logical_name.to_string(),
+        all_tags: tag_set.into_iter().collect(),
+        plays,
+    })
+}

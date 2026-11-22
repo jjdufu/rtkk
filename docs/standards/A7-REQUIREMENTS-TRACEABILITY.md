@@ -25,24 +25,24 @@
 
 ---
 
-## 2. Stage B 演进规划能力与预置门禁断言（`C15` ～ `C29`）
+## 2. Stage B 能力追踪矩阵（`C15` ～ `C29`）
 
-以下条目对应的门禁脚本（`scripts/gate/step01.sh` ～ `scripts/gate/step07.sh`）已完成预置编写并通过语法与可追溯性静态核验，在 Stage B 对应步骤实现合流后逐项激活运行：
+`C15` ～ `C27`（Step 01 ～ Step 06）已完成代码交付并通过 `step01.sh` ～ `step06.sh` 端到端验收；`C28` ～ `C29`（Step 07 容器部署栈与 Playwright 离线终验）门禁已预置就绪：
 
-| 编号 | 领域 | 能力规格描述 | 目标步骤 | 目标实现模块 | 绑定门禁脚本断言 |
+| 编号 | 领域 | 能力规格描述 | 状态 / 步骤 | 核心实现模块 | 绑定门禁脚本断言 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `C15` | B 编排层 | 多任务并发作用域 `EventSink` 与实例级 `TemplateRegistry` 零串扰隔离 | Step 01 | `src/logging/events.rs`、`src/template/mod.rs` | step01 `"concurrent-sink-isolated"` |
-| `C16` | G 服务底座 | `Workspace` 标准目录解析、空工作区自动释放内嵌默认 `configs/` 且幂等保留用户改动 | Step 01 | `src/workspace.rs` | step01 `"workspace-bootstrap-idempotent"` |
-| `C17` | G 服务底座 | `rtkk serve`（`:19912`）与 `rtkk healthcheck` 探活生命周期、令牌 `0600` 自举及优雅停机 | Step 02 | `src/cli.rs`、`src/daemon/mod.rs` | step02 `"daemon-healthcheck-ok"` |
-| `C18` | C 安全与鉴权 | 未授权请求 `/api/v1/*` 强制 `401` JSON 阻断、常量时间令牌登录与 `HttpOnly` 会话闭环 | Step 02 | `src/daemon/auth.rs`、`src/daemon/routes/auth.rs` | step02 `"unauth-401-blocked"`、step02 `"login-session-ok"` |
-| `C19` | G 服务底座 | 集群写任务全局单飞互斥锁（`409 CONFLICT_ACTIVE_JOB`）与 SSE 历史 JSONL 回放+实时尾随 | Step 02 | `src/daemon/jobs.rs`、`src/daemon/sse.rs` | step02 `"mutating-job-mutex"`、step02 `"sse-replay-complete"` |
-| `C20` | H Park UI | Park UI Light/Dark 双色对比度、在线 Theme Editor 与纯离线单二进制内嵌 SPA（Gzip + ETag `304`） | Step 03 | `build.rs`、`src/daemon/embed.rs`、`web/` | step03 `"spa-embedded-index"`、step03 `"spa-gzip-etag"` |
-| `C21` | C 安全与配置 | Inventory API 敏感字段 `********` 脱敏读取、未改密文无损保留回写与 `auth_basic` 自动重算 | Step 04 | `src/daemon/mask.rs`、`src/daemon/routes/inventory.rs` | step04 `"inventory-secret-masked"`、step04 `"inventory-preserve-unmodified-secret"` |
-| `C22` | E 集群交付 | 公网域名 DNS 劫持免证书开关（`public_registries_insecure`）双栈 `hosts.toml` 渲染 | Step 04 | `configs/deploy.yaml`、`configs/inventory.yaml` | step04 `"public-registries-hijack-hosts-toml"` |
-| `C23` | H 工作台 | 指定目标节点 6 大 `.gtmpl` 配置文件及 `images.yaml` 在线实时渲染预览与语法核验 | Step 04 | `src/daemon/routes/templates.rs`、`web/src/pages/TemplatesPage.tsx` | step04 `"template-preview-render-ok"` |
-| `C24` | D 离线与私库 | 离线产物目录落盘校验态盘点并与 `inventory.yaml` / `images.yaml` 动态清单精确对齐 | Step 05 | `src/daemon/routes/artifacts.rs`、`web/src/pages/ArtifactsPage.tsx` | step05 `"artifacts-status-inventory-aligned"` |
-| `C25` | D 离线与私库 | Daemon API 在线探测 Harbor/OCI 连通性并异步驱动镜像拉取、建项与批量推送闭环 | Step 05 | `src/daemon/routes/artifacts.rs`、`src/registry/` | step05 `"daemon-registry-ping-and-sync"` |
-| `C26` | B 编排控制台 | Playbook 大纲静态解析与通过 API 触发带 `--tags` 过滤的异步编排执行闭环 | Step 06 | `src/daemon/routes/operations.rs`、`web/src/pages/OperationsPage.tsx` | step06 `"playbook-outline-and-tagged-run"` |
-| `C27` | C PKI 与备份 | Web API 在线签发 99y/1y X.509 证书、公开元数据读取（零私钥泄露）、链校验与 `rtkk_bak/` 流式导出 | Step 06 | `src/daemon/routes/pki.rs`、`web/src/pages/PkiPage.tsx` | step06 `"pki-api-gen-inspect-verify"`、step06 `"backup-archive-stream"` |
-| `C28` | I 容器与发布 | `debian:13-slim` 非特权容器镜像（`uid=10001`）、独立 `deploy/compose/`（`:19912`）一键启停及 `dex2all/rtkk` 发布 | Step 07 | `deploy/`、`.github/workflows/release.yml` | step07 `"compose-lifecycle-19912"` |
-| `C29` | H Park UI 终验 | 纯断网离线拦截下 Playwright 验证 Light/Dark `>= 4.5:1` 对比度、零 `<select>`、全键盘无障碍、`<768px` 零溢出与全旅程 | Step 07 | `web/e2e/parkui-and-journey.spec.ts` | step07 `"playwright-parkui-offline-e2e"` |
+| `C15` | B 编排层 | 多任务并发作用域 `EventSink` 与实例级 `TemplateRegistry` 零串扰隔离 | 已交付（Step 01） | `src/logging/events.rs`、`src/template/mod.rs` | step01 `"concurrent-sink-isolated"` |
+| `C16` | G 服务底座 | `Workspace` 标准目录解析、空工作区自动释放内嵌默认 `configs/` 且幂等保留用户改动 | 已交付（Step 01） | `src/workspace.rs` | step01 `"workspace-bootstrap-idempotent"` |
+| `C17` | G 服务底座 | `rtkk serve`（`:19912`）与 `rtkk healthcheck` 探活生命周期、令牌 `0600` 自举及优雅停机 | 已交付（Step 02） | `src/cli.rs`、`src/daemon/mod.rs` | step02 `"daemon-healthcheck-ok"` |
+| `C18` | C 安全与鉴权 | 未授权请求 `/api/v1/*` 强制 `401` JSON 阻断、常量时间令牌登录与 `HttpOnly` 会话闭环 | 已交付（Step 02） | `src/daemon/auth.rs`、`src/daemon/routes/auth.rs` | step02 `"unauth-401-blocked"`、step02 `"login-session-ok"` |
+| `C19` | G 服务底座 | 集群写任务全局单飞互斥锁（`409 CONFLICT_ACTIVE_JOB`）与 SSE 历史 JSONL 回放+实时尾随 | 已交付（Step 02） | `src/daemon/jobs.rs`、`src/daemon/sse.rs` | step02 `"mutating-job-mutex"`、step02 `"sse-replay-complete"` |
+| `C20` | H Park UI | Park UI Light/Dark 双色对比度、在线 Theme Editor 与纯离线单二进制内嵌 SPA（Gzip + ETag `304`） | 已交付（Step 03） | `build.rs`、`src/daemon/embed.rs`、`web/` | step03 `"spa-embedded-index"`、step03 `"spa-gzip-etag"` |
+| `C21` | C 安全与配置 | Inventory API 敏感字段 `********` 脱敏读取、未改密文无损保留回写与 `auth_basic` 自动重算 | 已交付（Step 04） | `src/daemon/mask.rs`、`src/daemon/routes/inventory.rs` | step04 `"inventory-secret-masked"`、step04 `"inventory-preserve-unmodified-secret"` |
+| `C22` | E 集群交付 | 公网域名 DNS 劫持免证书开关（`public_registries_insecure`）双栈 `hosts.toml` 渲染 | 已交付（Step 04） | `configs/deploy.yaml`、`configs/inventory.yaml` | step04 `"public-registries-hijack-hosts-toml"` |
+| `C23` | H 工作台 | 指定目标节点 6 大 `.gtmpl` 配置文件及 `images.yaml` 在线实时渲染预览与语法核验 | 已交付（Step 04） | `src/daemon/routes/templates.rs`、`web/src/pages/TemplatesPage.tsx` | step04 `"template-preview-render-ok"` |
+| `C24` | D 离线与私库 | 离线产物目录落盘校验态盘点并与 `inventory.yaml` / `images.yaml` 动态清单精确对齐 | 已交付（Step 05） | `src/daemon/routes/artifacts.rs`、`web/src/pages/ArtifactsPage.tsx` | step05 `"artifacts-status-inventory-aligned"` |
+| `C25` | D 离线与私库 | Daemon API 在线探测 Harbor/OCI 连通性并异步驱动镜像拉取、建项与批量推送闭环 | 已交付（Step 05） | `src/daemon/routes/artifacts.rs`、`src/registry/` | step05 `"daemon-registry-ping-and-sync"` |
+| `C26` | B 编排控制台 | Playbook 大纲静态解析与通过 API 触发带 `--tags` 过滤的异步编排执行闭环 | 已交付（Step 06） | `src/daemon/routes/operations.rs`、`web/src/pages/OperationsPage.tsx` | step06 `"playbook-outline-and-tagged-run"` |
+| `C27` | C PKI 与备份 | Web API 在线签发 99y/1y X.509 证书、公开元数据读取（零私钥泄露）、链校验与 `rtkk_bak/` 流式导出 | 已交付（Step 06） | `src/daemon/routes/pki.rs`、`web/src/pages/PkiPage.tsx` | step06 `"pki-api-gen-inspect-verify"`、step06 `"backup-archive-stream"` |
+| `C28` | I 容器与发布 | `debian:13-slim` 非特权容器镜像（`uid=10001`）、独立 `deploy/compose/`（`:19912`）一键启停及 `dex2all/rtkk` 发布 | 待执行（Step 07） | `deploy/`、`.github/workflows/release.yml` | step07 `"compose-lifecycle-19912"` |
+| `C29` | H Park UI 终验 | 纯断网离线拦截下 Playwright 验证 Light/Dark `>= 4.5:1` 对比度、零 `<select>`、全键盘无障碍、`<768px` 零溢出与全旅程 | 待执行（Step 07） | `web/e2e/parkui-and-journey.spec.ts` | step07 `"playwright-parkui-offline-e2e"` |

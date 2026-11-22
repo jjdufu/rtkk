@@ -37,8 +37,8 @@ fi
 echo "=== [G3] Running Active End-to-End Gates ==="
 cargo build --locked
 
-# Stage A activates step00 by default; orchestrator appends step01..step07 as Stage B steps land.
-ACTIVE_GATES="${RTKK_ACTIVE_GATES:-step00}"
+# Stage B Step 01..06 active; step07 activates once deploy/compose & Docker/Playwright land in Step 07.
+ACTIVE_GATES="${RTKK_ACTIVE_GATES:-step00 step01 step02 step03 step04 step05 step06}"
 for gate_step in $ACTIVE_GATES; do
   bash "scripts/gate/${gate_step}.sh"
 done

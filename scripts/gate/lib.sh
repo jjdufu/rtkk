@@ -59,9 +59,7 @@ gate_register_pid() {
 }
 
 ensure_rtkk_bin() {
-  if [[ ! -x "$RTKK_BIN" ]]; then
-    (cd "$REPO_ROOT" && cargo build --locked)
-  fi
+  (cd "$REPO_ROOT" && cargo build --locked)
 }
 
 run_assertion() {
@@ -133,7 +131,10 @@ file_mode_octal() {
 assert_file_mode() {
   local path="$1"
   local expected_octal="$2"
-  assert_file_exists "$path"
+  if [[ ! -e "$path" ]]; then
+    echo "Assertion failed: expected path '${path}' to exist" >&2
+    return 1
+  fi
   local actual_octal
   actual_octal="$(file_mode_octal "$path")"
   if [[ "$actual_octal" != "$expected_octal" ]]; then

@@ -193,6 +193,36 @@ pub enum Commands {
         #[arg(long, help = "Accept invalid TLS certificates for pull")]
         insecure: bool,
     },
+    /// Start the long-running HTTP/SSE Daemon and embedded Park UI console (`127.0.0.1:19912`).
+    #[command(about = "Start rtkk HTTP/SSE daemon and embedded WebUI console")]
+    Serve {
+        /// Listen socket address (defaults to `RTKK_BIND_ADDR` or `127.0.0.1:19912`).
+        #[arg(
+            long,
+            help = "Bind address (default: RTKK_BIND_ADDR or 127.0.0.1:19912)"
+        )]
+        listen: Option<String>,
+        /// Workspace root directory (defaults to `RTKK_WORK_DIR` or `.`).
+        #[arg(long, help = "Workspace directory (default: RTKK_WORK_DIR or .)")]
+        work_dir: Option<PathBuf>,
+        /// Admin token file path (defaults to `<work-dir>/.rtkk-daemon/admin.token`).
+        #[arg(long, help = "Admin token file path (`0600`)")]
+        token_file: Option<PathBuf>,
+    },
+    /// Probe a running `rtkk serve` daemon health endpoint.
+    #[command(about = "Probe daemon /api/v1/health endpoint")]
+    Healthcheck {
+        /// Full health endpoint URL.
+        #[arg(
+            long,
+            default_value = "http://127.0.0.1:19912/api/v1/health",
+            help = "Daemon health check URL"
+        )]
+        url: String,
+        /// Request timeout in seconds.
+        #[arg(long, default_value_t = 3, help = "HTTP probe timeout in seconds")]
+        timeout_secs: u64,
+    },
 }
 
 /// Subcommands under `rtkk prep`.
@@ -444,7 +474,14 @@ fn connector_type_from_vars(vars: &HashMap<String, Value>) -> Option<ConnectorTy
     }
 }
 
-fn build_target_configs(flat: &FlatInventory) -> Result<HashMap<String, TargetConfig>, RtkkError> {
+/// Constructs per-host [`TargetConfig`] entries from a resolved [`FlatInventory`].
+///
+/// # Errors
+///
+/// Returns [`RtkkError::Inventory`] if any host specifies an unrecognized privilege escalation method.
+pub fn build_target_configs_for_flat(
+    flat: &FlatInventory,
+) -> Result<HashMap<String, TargetConfig>, RtkkError> {
     let mut target_configs = HashMap::new();
     for (host, vars) in &flat.host_vars {
         let privilege = privilege_from_vars(vars)?;
@@ -512,7 +549,7 @@ pub async fn load_inventory_with_overrides(
     }
     crate::playbook::inject_dynamic_inventory_vars(&flat.groups, &mut flat.host_vars);
     crate::playbook::inject_runtime_vars(&mut flat.host_vars, inventory_path);
-    let target_configs = build_target_configs(&flat)?;
+    let target_configs = build_target_configs_for_flat(&flat)?;
     let inventory_dir = Path::new(inventory_path).parent().map(|p| {
         if p.as_os_str().is_empty() {
             PathBuf::from(".")
@@ -726,6 +763,31 @@ async fn dispatch_push_images(
     }
 }
 
+async fn dispatch_serve(
+    listen: Option<String>,
+    work_dir: Option<PathBuf>,
+    token_file: Option<PathBuf>,
+) -> Result<(), RtkkError> {
+    let bind = listen
+        .or_else(|| {
+            std::env::var("RTKK_BIND_ADDR")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
+        .unwrap_or_else(|| "127.0.0.1:19912".to_string());
+    let wd = work_dir.unwrap_or_else(|| {
+        crate::workspace::Workspace::from_env_or_current()
+            .root()
+            .to_path_buf()
+    });
+    crate::daemon::run_daemon(crate::daemon::ServeOptions {
+        listen: bind,
+        work_dir: wd,
+        token_file,
+    })
+    .await
+}
+
 /// Execute a parsed [`Commands`] variant.
 ///
 /// # Errors
@@ -815,6 +877,14 @@ pub async fn dispatch_command(command: Commands) -> Result<(), RtkkError> {
             crate::registry::execute_sync_images(&opts)
                 .await
                 .map_err(RtkkError::Registry)
+        }
+        Commands::Serve {
+            listen,
+            work_dir,
+            token_file,
+        } => dispatch_serve(listen, work_dir, token_file).await,
+        Commands::Healthcheck { url, timeout_secs } => {
+            crate::daemon::execute_healthcheck(&url, timeout_secs).await
         }
     }
 }

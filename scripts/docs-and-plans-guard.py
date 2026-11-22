@@ -68,10 +68,10 @@ def check_memory_budgets(errors: list[str]) -> None:
         size = path.stat().st_size
         if size >= MAX_MEMORY_BYTES:
             errors.append(f"{rel}: size {size} bytes exceeds strict < {MAX_MEMORY_BYTES} byte budget")
-        if path.name in {"AGENTS.md", "GEMINI.md", "CLAUDE.md"}:
+        if rel in {"AGENTS.md", "GEMINI.md", "CLAUDE.md"}:
             lines = path.read_text(encoding="utf-8").splitlines()
             # Line 3 mentions the sibling filenames; everything from line 4 onward must stay identical
-            synced_bodies[path.name] = "\n".join(lines[4:])
+            synced_bodies[rel] = "\n".join(lines[4:])
 
     if len(synced_bodies) == 3:
         ref_body = synced_bodies["AGENTS.md"]

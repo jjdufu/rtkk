@@ -254,7 +254,7 @@ PYEOF
   cat > "${GATE_WORK_DIR}/configs/images.yaml" <<EOF
 images:
   - name: pause
-    source: "http://127.0.0.1:${mock_port}/library/pause:3.10.2"
+    source: "127.0.0.1:${mock_port}/library/pause:3.10.2"
     target: "{{ .registry.url }}/pause:3.10.2"
 EOF
 

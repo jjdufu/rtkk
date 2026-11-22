@@ -57,6 +57,7 @@ type ConnectingMap = HashMap<String, Arc<OnceCell<Arc<PooledConnector>>>>;
 
 #[derive(Debug, Clone)]
 struct PlayExecContext {
+    play_name: String,
     play_become: Option<bool>,
     play_become_method: Option<BecomeMethod>,
     play_become_user: Option<String>,
@@ -159,6 +160,12 @@ pub struct ExecutionEngine {
     pub tag_filter: Vec<String>,
     /// Optional default per-task timeout in seconds.
     pub task_timeout_secs: Option<u64>,
+    /// Optional scoped event sink isolating telemetry for concurrent Daemon jobs.
+    pub event_sink: Option<Arc<dyn crate::logging::EventSink>>,
+    /// Instance-scoped template registry isolating `include` lookups across runs.
+    pub template_registry: crate::template::TemplateRegistry,
+    /// Optional explicit workspace directory handle.
+    pub workspace: Option<crate::workspace::Workspace>,
 }
 
 impl ExecutionEngine {
@@ -198,6 +205,9 @@ impl ExecutionEngine {
             inventory_dir,
             tag_filter: Vec::new(),
             task_timeout_secs: None,
+            event_sink: None,
+            template_registry: crate::template::TemplateRegistry::new(),
+            workspace: None,
         }
     }
 
@@ -275,7 +285,13 @@ impl ExecutionEngine {
     /// Returns an error if target host resolution fails, `serial` is invalid, or any non-ignored
     /// task fails.
     pub async fn run_playbook(self: &Arc<Self>, playbook: &Playbook) -> Result<(), String> {
-        let result = self.run_playbook_inner(playbook).await;
+        let sink = self.event_sink.clone();
+        let tpl_reg = self.template_registry.clone();
+        let result = crate::logging::with_optional_event_sink(
+            sink,
+            crate::template::with_template_registry(tpl_reg, self.run_playbook_inner(playbook)),
+        )
+        .await;
         let drained: Vec<(String, Arc<PooledConnector>)> = {
             let mut pool = self.connection_pool.lock().await;
             pool.drain().collect()
@@ -285,7 +301,6 @@ impl ExecutionEngine {
                 eprintln!("Warning: timed out closing connection for {host}: {e}");
             }
         }
-        crate::logging::shutdown_logging();
         result
     }
 
@@ -295,6 +310,10 @@ impl ExecutionEngine {
             crate::log_println!("\nPLAY [{play_name}]");
             let hosts = resolve_play_hosts(&play.hosts, &self.inventory)
                 .map_err(|e| format!("play '{play_name}': {e}"))?;
+            let _ = crate::logging::emit_event(crate::logging::ExecutionEvent::PlayStarted {
+                play_name: play_name.to_string(),
+                hosts: hosts.clone(),
+            });
             crate::log_println!("Target hosts: {hosts:?}");
             let batches = partition_hosts(&hosts, play.serial.as_ref())
                 .map_err(|e| format!("play '{play_name}': {e}"))?;
@@ -344,7 +363,9 @@ impl ExecutionEngine {
         let Some(ref tasks) = play.tasks else {
             return Ok(());
         };
+        let play_name_str = play.name.as_deref().unwrap_or("unnamed play").to_string();
         let base_ctx = PlayExecContext {
+            play_name: play_name_str,
             play_become: play.r#become,
             play_become_method: play.become_method,
             play_become_user: play.become_user.clone(),
@@ -368,13 +389,25 @@ impl ExecutionEngine {
             } else {
                 batch.to_vec()
             };
+            let inherited_sink = self
+                .event_sink
+                .clone()
+                .or_else(crate::logging::current_event_sink);
             let mut handles = Vec::with_capacity(targets.len());
             for host in targets {
                 let engine = Arc::clone(self);
                 let t = task.clone();
                 let ctx = base_ctx.clone();
+                let task_sink = inherited_sink.clone();
+                let tpl_reg = engine.template_registry.clone();
                 handles.push(tokio::spawn(async move {
-                    engine.run_task_on_host(&t, &host, &ctx).await
+                    crate::logging::with_optional_event_sink(
+                        task_sink,
+                        crate::template::with_template_registry(tpl_reg, async move {
+                            engine.run_task_on_host(&t, &host, &ctx).await
+                        }),
+                    )
+                    .await
                 }));
             }
             let mut has_failure = false;
@@ -453,6 +486,7 @@ impl ExecutionEngine {
                 ctx.tag_filter.clone()
             };
             let sub_ctx = PlayExecContext {
+                play_name: ctx.play_name.clone(),
                 play_become: task.r#become.or(ctx.play_become),
                 play_become_method: task.become_method.or(ctx.play_become_method),
                 play_become_user: task
@@ -515,11 +549,29 @@ impl ExecutionEngine {
     ) -> BoxFuture<'a, Result<TaskResult, String>> {
         Box::pin(async move {
             let task_name = task.name.as_deref().unwrap_or("unnamed task");
+            let started_at = std::time::Instant::now();
+            let _ = crate::logging::emit_event(crate::logging::ExecutionEvent::TaskStarted {
+                play_name: ctx.play_name.clone(),
+                task_name: task_name.to_string(),
+                host: host.to_string(),
+            });
             crate::logging::start_task(host, task_name);
             let result = self.run_task_on_host_inner(task, host, ctx).await;
+            let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
             match &result {
                 Ok(r) if r.failed => {
                     crate::logging::finish_task_failed(host, task_name, &r.stderr);
+                    let _ =
+                        crate::logging::emit_event(crate::logging::ExecutionEvent::TaskFinished {
+                            task_name: task_name.to_string(),
+                            host: host.to_string(),
+                            changed: r.changed,
+                            failed: true,
+                            skipped: false,
+                            stdout: r.stdout.clone(),
+                            stderr: r.stderr.clone(),
+                            duration_ms,
+                        });
                     if host == "localhost" {
                         crate::log_println!(
                             "fatal: FAILED! => stdout: {}, stderr: {}",
@@ -536,6 +588,18 @@ impl ExecutionEngine {
                 }
                 Ok(r) => {
                     crate::logging::finish_task_success(host, task_name);
+                    let skipped = !r.changed && r.stdout == "skipped" && r.stderr.is_empty();
+                    let _ =
+                        crate::logging::emit_event(crate::logging::ExecutionEvent::TaskFinished {
+                            task_name: task_name.to_string(),
+                            host: host.to_string(),
+                            changed: r.changed,
+                            failed: false,
+                            skipped,
+                            stdout: r.stdout.clone(),
+                            stderr: r.stderr.clone(),
+                            duration_ms,
+                        });
                     let label = match (r.changed, host == "localhost") {
                         (true, true) => "changed".to_string(),
                         (true, false) => format!("changed: [{host}]"),
@@ -546,6 +610,17 @@ impl ExecutionEngine {
                 }
                 Err(e) => {
                     crate::logging::finish_task_failed(host, task_name, e);
+                    let _ =
+                        crate::logging::emit_event(crate::logging::ExecutionEvent::TaskFinished {
+                            task_name: task_name.to_string(),
+                            host: host.to_string(),
+                            changed: false,
+                            failed: true,
+                            skipped: false,
+                            stdout: String::new(),
+                            stderr: e.clone(),
+                            duration_ms,
+                        });
                     if host == "localhost" {
                         crate::log_println!("fatal: FAILED! => {e}");
                     } else {

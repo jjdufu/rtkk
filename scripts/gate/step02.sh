@@ -99,7 +99,15 @@ test_sse_replay_complete() {
 
   # Verify clean SIGTERM shutdown of live daemon
   kill -TERM "$DAEMON_PID"
-  wait "$DAEMON_PID"
+  local waited=0
+  while kill -0 "$DAEMON_PID" 2>/dev/null && (( waited < 50 )); do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  if kill -0 "$DAEMON_PID" 2>/dev/null; then
+    echo "Daemon did not exit within 5s after SIGTERM" >&2
+    return 1
+  fi
 }
 
 run_assertion "daemon-healthcheck-ok" test_daemon_healthcheck_ok

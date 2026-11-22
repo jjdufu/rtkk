@@ -51,6 +51,7 @@ vars:
   cluster_pool_mask_size: "24"
   nodelocaldns_ip: "169.254.20.10"
   # containerd certs.d hosts for public image sources
+  public_registries_insecure: false
   public_registries:
     - docker.io
     - registry-1.docker.io

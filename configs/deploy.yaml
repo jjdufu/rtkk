@@ -178,8 +178,17 @@
       copy:
         content: |
           server = "https://{{ .item }}"
+          {{- if and .public_registries_insecure (ne (printf "%v" .public_registries_insecure) "false") }}
           [host."https://{{ .item }}"]
             capabilities = ["pull", "resolve"]
+            skip_verify = true
+          [host."http://{{ .item }}"]
+            capabilities = ["pull", "resolve"]
+            skip_verify = true
+          {{- else }}
+          [host."https://{{ .item }}"]
+            capabilities = ["pull", "resolve"]
+          {{- end }}
         dest: "/etc/containerd/certs.d/{{ .item }}/hosts.toml"
         mode: "0644"
       with_items: "{{ .public_registries }}"

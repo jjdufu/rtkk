@@ -10,4 +10,6 @@ pub use engine::ExecutionEngine;
 pub use etcd::{inject_dynamic_inventory_vars, inject_runtime_vars};
 pub use helpers::eval_condition;
 pub use model::{Play, Playbook};
-pub use parser::compile_playbook;
+pub use parser::{
+    PlayOutline, PlaybookOutline, TaskOutline, compile_playbook, extract_playbook_outline,
+};

@@ -80,6 +80,14 @@ tar = "0.4"
 serde_yml = "0.0.13"
 clap = { version = "4.6.1", features = ["derive"] }
 shell-words = "1.1"
+axum = { version = "0.8", default-features = false, features = ["json", "tokio", "http1", "query"] }
+tower-http = { version = "0.6", default-features = false, features = ["trace", "set-header", "limit"] }
+subtle = "2.6"
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+
+[build-dependencies]
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+sha2 = "0.10"
 
 [[test]]
 name = "cert_tests"
@@ -112,3 +120,11 @@ path = "test/prep_and_cli_tests.rs"
 [[test]]
 name = "configs_render_tests"
 path = "test/configs_render_tests.rs"
+
+[[test]]
+name = "workspace_and_events_tests"
+path = "test/workspace_and_events_tests.rs"
+
+[[test]]
+name = "daemon_core_tests"
+path = "test/daemon_core_tests.rs"

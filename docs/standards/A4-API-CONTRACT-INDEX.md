@@ -4,21 +4,10 @@
 
 ---
 
-## 1. 已挂载路由表（Mounted Routes · `check_routes.py` 双向强校验）
-
-Stage A 基线阶段尚未挂载 `src/daemon/routes/` 路由（已挂载数量为 `0`）。在 Stage B 各 Step 契约与实现合流时，由 `orchestrator` 将下方预登记条目逐批迁入本节锚点区间内。
+## 1. 已挂载路由表（Mounted Routes · 共 27 条 · `check_routes.py` 双向强校验）
 
 <!-- MOUNTED_ROUTES_START -->
-| 方法 | 路由路径 | 鉴权级别 | 互斥级别 | 处理模块 | 所属步骤 |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-<!-- MOUNTED_ROUTES_END -->
-
----
-
-## 2. Stage B 待挂载路由预登记全表（Planned Routes · 共 27 条）
-
-<!-- PLANNED_ROUTES_START -->
-| 方法 | 路由路径 | 鉴权级别 | 互斥级别 | 目标处理模块 | 交付步骤 | 接口摘要 |
+| 方法 | 路由路径 | 鉴权级别 | 互斥级别 | 处理模块 | 所属步骤 | 接口摘要 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | `GET` | `/api/v1/health` | `public` | `readonly` | `routes/health.rs` | Step 02 | 探活端点，返回 `{status: "ok", version, uptime_secs}` |
 | `POST` | `/api/v1/auth/login` | `public` | `readonly` | `routes/auth.rs` | Step 02 | 校验管理令牌并签发 `HttpOnly; SameSite=Strict` 会话 Cookie |
@@ -27,7 +16,7 @@ Stage A 基线阶段尚未挂载 `src/daemon/routes/` 路由（已挂载数量�
 | `GET` | `/api/v1/system/overview` | `authenticated` | `readonly` | `routes/health.rs` | Step 02 | 返回工作区子目录就绪度、离线包统计、最近任务与活跃锁状态 |
 | `GET` | `/api/v1/jobs` | `authenticated` | `readonly` | `routes/jobs.rs` | Step 02 | 分页查询运行中与历史异步任务列表 `{items, next_cursor}` |
 | `GET` | `/api/v1/jobs/{id}` | `authenticated` | `readonly` | `routes/jobs.rs` | Step 02 | 获取单个任务元数据、起止时间戳、终态与节点汇总 |
-| `POST` | `/api/v1/jobs/{id}/cancel` | `authenticated` | `readonly` | `routes/jobs.rs` | Step 02 | 触发任务级 `CancellationToken` 协作中止执行 |
+| `POST` | `/api/v1/jobs/{id}/cancel` | `authenticated` | `readonly` | `routes/jobs.rs` | Step 02 | 触发任务级取消句柄协作中止执行 |
 | `GET` | `/api/v1/jobs/{id}/events` | `authenticated` | `readonly` | `routes/jobs.rs` | Step 02 | SSE 事件流：先回放落盘 JSONL 历史帧，再无缝尾随实时事件 |
 | `GET` | `/api/v1/inventory` | `authenticated` | `readonly` | `routes/inventory.rs` | Step 04 | 读取 `********` 脱敏后的结构化配置、拓扑组与脱敏 YAML 原文 |
 | `PUT` | `/api/v1/inventory` | `authenticated` | `mutating` | `routes/inventory.rs` | Step 04 | 校验拓扑与参数，无损保留未改密文、留存 `.bak` 并原子写回 |
@@ -44,7 +33,16 @@ Stage A 基线阶段尚未挂载 `src/daemon/routes/` 路由（已挂载数量�
 | `GET` | `/api/v1/playbooks/{name}/outline` | `authenticated` | `readonly` | `routes/operations.rs` | Step 06 | 解析并返回 `deploy`/`cleanup`/`download` 的 Play、Task 与可选 Tags 树 |
 | `GET` | `/api/v1/pki/certificates` | `authenticated` | `readonly` | `routes/pki.rs` | Step 06 | 扫描 `pki/` 下公开证书 X.509 元数据（CN、SAN、到期日，绝不含私钥） |
 | `POST` | `/api/v1/pki/generate` | `authenticated` | `mutating` | `routes/pki.rs` | Step 06 | 在线签发 99y/1y 根 CA 或含 IP/DNS SAN 的叶证书落盘至 `pki/custom/` |
-| `POST` | `/api/v1/pki/verify` | `authenticated` | `readonly` | `routes/pki.rs` | Step 06 | 校验工作区或传入 PEM 的公私钥配对关系与根 CA 签名链 |
+| `POST` | `/api/v1/pki/verify` | `authenticated` | `readonly` | `routes/pki.rs` | Step 06 | 校验工作区路径内证书、私钥配对关系与根 CA 签名链 |
 | `GET` | `/api/v1/backups` | `authenticated` | `readonly` | `routes/pki.rs` | Step 06 | 列出 `rtkk_bak/` 下已回收的节点状态、`admin.conf` 与 PKI 备份文件清单 |
 | `GET` | `/api/v1/backups/archive` | `authenticated` | `readonly` | `routes/pki.rs` | Step 06 | 将 `rtkk_bak/` 流式压缩为 `.tar.gz` 下载并写入审计日志 |
+<!-- MOUNTED_ROUTES_END -->
+
+---
+
+## 2. Stage B 待挂载路由预登记全表（Planned Routes · 剩余 0 条）
+
+<!-- PLANNED_ROUTES_START -->
+| 方法 | 路由路径 | 鉴权级别 | 互斥级别 | 目标处理模块 | 交付步骤 | 接口摘要 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 <!-- PLANNED_ROUTES_END -->
