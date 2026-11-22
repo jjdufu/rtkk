@@ -1,21 +1,23 @@
+# 示例占位。口令和地址按环境修改，不要把真实口令或内网地址提交到仓库。
 vars:
   ansible_user: "root"
-  ansible_ssh_pass: "123"
+  ansible_ssh_pass: "change-me"
+  # ansible_ssh_private_key_file: "~/.ssh/rtkk_ed25519"
   # ansible_become: false
   # ansible_become_method: "sudo"   # "sudo" (default) | "su"
   # ansible_become_user: "root"
-  # ansible_become_pass: "123"
+  # ansible_become_pass: "change-me"
   # ansible_ssh_host_key_checking: false
   rtkk_bin: "./target/release/rtkk"
   rtkk_inventory: "configs/inventory.yaml"
   images_file: "configs/images.yaml"
   registry:
-    url: "192.168.26.10/rtkk"
-    host: "192.168.26.10"
+    url: "10.0.0.10/rtkk"
+    host: "10.0.0.10"
     username: "admin"
-    password: "DcpHar_imG@123"
+    password: "change-me"
     # Auto-derived from username:password by rtkk when omitted or rotated
-    auth_basic: "YWRtaW46RGNwSGFyX2ltR0AxMjM="
+    auth_basic: "YWRtaW46Y2hhbmdlLW1l"
     insecure: true
     # Transport scheme: "auto" | "https" | "http"
     scheme: "auto"
@@ -30,7 +32,7 @@ vars:
     layer_concurrency: 4
     http_timeout_secs: 600
   pki_dir: "./pki"
-  # Certificate validity period (99y default; "8760h" / "1y" / "10y" also supported)
+  # Certificate validity period (99y default; "8760h" / "1y" / "10y" / "365d" also supported)
   cert_validity: "867240h"
   kube_version: "v1.37.2"
   etcd_version: "v3.7.4"
@@ -39,7 +41,7 @@ vars:
   runc_version: "v1.5.3"
   cni_version: "v1.10.0"
   helm_version: "v4.3.2"
-  control_plane_endpoint: "192.168.26.68:6443"
+  control_plane_endpoint: "10.0.0.68:6443"
   # kube-vip ARP interface on control-plane nodes (must match primary NIC)
   vip_interface: "ens33"
   # Cluster networking (single source for kubeadm / Cilium / NodeLocalDNS)
@@ -49,10 +51,15 @@ vars:
   cluster_domain: "cluster.local"
   cluster_pool_mask_size: "24"
   nodelocaldns_ip: "169.254.20.10"
-  # containerd certs.d hosts for public image sources
+  # containerd certs.d hosts, auth, and mirror overrides for public image sources
+  public_registries_insecure: false
+  public_registries_auth: false
+  # public_registries_mirror: ""
+  public_registries_mirrors: {}
   public_registries:
     - docker.io
     - registry-1.docker.io
+    - index.docker.io
     - registry.k8s.io
     - quay.io
     - gcr.io
@@ -69,6 +76,16 @@ vars:
   openebs_version: "4.6.0"
   # Pluggable CNI ("cilium" | "custom" | "none") and optional cluster addons
   cni_plugin: "cilium"
+  # Cilium KPR, L2 announcements, externalIPs, and NIC device list
+  cilium_kube_proxy_replacement: false
+  # cilium_k8s_service_host: "10.0.0.68"
+  # cilium_k8s_service_port: 6443
+  cilium_l2_announcements: false
+  # cilium_l2_lease_duration: "15s"
+  # cilium_l2_lease_renew_deadline: "5s"
+  # cilium_l2_lease_retry_period: "2s"
+  cilium_external_ips: false
+  cilium_devices: []
   addons:
     nodelocaldns: true
     openebs_localpv: true
@@ -79,14 +96,14 @@ vars:
   # Debian 13 system dependency auto-convergence (uses ./downloads/tar/debian13-deps.tar.gz if present, else apt-get)
   auto_install_apt_deps: true
   extra_apt_packages: []
-  dns_upstream: "192.168.26.111"
+  dns_upstream: "10.0.0.111"
 hosts:
-  c23-p61: 192.168.26.61
-  c23-p62: 192.168.26.62
-  c23-p63: 192.168.26.63
-  c23-p64: 192.168.26.64
-  c23-p65: 192.168.26.65
-  c23-p66: 192.168.26.66
+  c23-p61: 10.0.0.61
+  c23-p62: 10.0.0.62
+  c23-p63: 10.0.0.63
+  c23-p64: 10.0.0.64
+  c23-p65: 10.0.0.65
+  c23-p66: 10.0.0.66
 roles:
   kube_control_plane: [c23-p61, c23-p62, c23-p63]
   kube_node: [c23-p64, c23-p65, c23-p66]

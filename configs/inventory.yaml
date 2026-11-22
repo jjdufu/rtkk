@@ -2,6 +2,7 @@
 vars:
   ansible_user: "root"
   ansible_ssh_pass: "change-me"
+  # ansible_ssh_private_key_file: "~/.ssh/rtkk_ed25519"
   # ansible_become: false
   # ansible_become_method: "sudo"   # "sudo" (default) | "su"
   # ansible_become_user: "root"
@@ -31,7 +32,7 @@ vars:
     layer_concurrency: 4
     http_timeout_secs: 600
   pki_dir: "./pki"
-  # Certificate validity period (99y default; "8760h" / "1y" / "10y" also supported)
+  # Certificate validity period (99y default; "8760h" / "1y" / "10y" / "365d" also supported)
   cert_validity: "867240h"
   kube_version: "v1.37.2"
   etcd_version: "v3.7.4"
@@ -50,11 +51,14 @@ vars:
   cluster_domain: "cluster.local"
   cluster_pool_mask_size: "24"
   nodelocaldns_ip: "169.254.20.10"
-  # containerd certs.d hosts for public image sources
+  # containerd certs.d hosts, auth, and mirror overrides for public image sources
   public_registries_insecure: false
+  public_registries_auth: false
+  public_registries_mirrors: {}
   public_registries:
     - docker.io
     - registry-1.docker.io
+    - index.docker.io
     - registry.k8s.io
     - quay.io
     - gcr.io
@@ -71,6 +75,11 @@ vars:
   openebs_version: "4.6.0"
   # Pluggable CNI ("cilium" | "custom" | "none") and optional cluster addons
   cni_plugin: "cilium"
+  # Cilium KPR, L2 announcements, externalIPs, and NIC device list
+  cilium_kube_proxy_replacement: false
+  cilium_l2_announcements: false
+  cilium_external_ips: false
+  cilium_devices: []
   addons:
     nodelocaldns: true
     openebs_localpv: true
