@@ -36,7 +36,7 @@ missing_panics_doc = "deny"
 
 [package]
 name = "rtkk"
-version = "0.0.5" # x-release-please-version
+version = "0.0.6" # x-release-please-version
 edition.workspace = true
 rust-version.workspace = true
 [lints]

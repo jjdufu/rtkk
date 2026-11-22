@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.0.6](https://github.com/jjdufu/rtkk/compare/v0.0.5...v0.0.6) (2026-11-22)
+
+
+### Features
+
+* **cli,docs:** 新增 push-images --retag 参数并同步更新运维与契约文档 ([b16a51c](https://github.com/jjdufu/rtkk/commit/b16a51c79a484ae8d6354b34d2ae1f29c787b4f7))
+* **configs,tests:** 支持公网镜像源 override_path 透明映射、CA 分发与 Harbor 建项测试 ([142e93d](https://github.com/jjdufu/rtkk/commit/142e93df0c55b861f25965eb07ef61a028926064))
+* **daemon,web:** 交付 Stage B Step 01-06 常驻服务、内嵌 Park UI 与全量管理接口 ([5d5adac](https://github.com/jjdufu/rtkk/commit/5d5adacd8b800c9be06557f51251c28d3387c3d9))
+* **daemon:** 补齐 Inventory 证书有效期预校验、私钥存在性告警与私库重标推送参数 ([e81bba8](https://github.com/jjdufu/rtkk/commit/e81bba8e2ba1fb1ba3c21f942b885d209c01590e))
+* **deploy,e2e:** add Debian 13 container stack, compose lifecycle scripts, and offline Park UI Playwright E2E ([c8ee0e4](https://github.com/jjdufu/rtkk/commit/c8ee0e4dc3301cca7c5ea4b02746a403ec5757a3))
+* **engine,registry,ssh:** 支持私钥波浪号展开、证书小时规范化与跨私库镜像自动重标推送 ([d4ba1a2](https://github.com/jjdufu/rtkk/commit/d4ba1a212eef3da0c13e586acd893132565dd3c3))
+* **engine,registry:** 新增 ensure_harbor_projects 模块与公网镜像源透明映射项目自举 ([7fb158f](https://github.com/jjdufu/rtkk/commit/7fb158f9967fa114f9cba27eb05f13fbcb7d9319))
+* **web:** expose SSH key/port, public registry auth, Cilium KPR/L2, custom cert validity, and retag push ([02d106b](https://github.com/jjdufu/rtkk/commit/02d106b6bc2b546716995bfd4ad39e6e7838514e))
+* **web:** 在集群配置页新增公网镜像源 override_path 透明映射与 Harbor 自动建项开关 ([6ad2f32](https://github.com/jjdufu/rtkk/commit/6ad2f3211fbf23043ecd3cf0237ce7df01532532))
+
+
+### Bug Fixes
+
+* **compose:** 补齐 svc_start 当前进程 load_compose_env 变量加载 ([bb70555](https://github.com/jjdufu/rtkk/commit/bb705558b14fe94b45a04eac688249e80eccdbf4))
+* **configs:** harden public registries, cilium L2/CRD readiness, cert validity, and inventory hygiene ([cefbcd4](https://github.com/jjdufu/rtkk/commit/cefbcd4e2e9c059fcc14b01977c2828ad8af7b8f))
+* **configs:** 修复 deploy.yaml 控制面条件寄存器短路求值保护 ([76889da](https://github.com/jjdufu/rtkk/commit/76889da57dd5a4c12d0a461a3c1682183be8eed5))
+* **deploy,gate:** harden compose common.sh env parser and symlink guards per L3 review ([5063fa0](https://github.com/jjdufu/rtkk/commit/5063fa0a165ae2dd1e9d775d3739fde7b67dc633))
+* **gate:** 对齐 vps-cluster-e2e 沙盒工作目录与离线 downloads 挂载 ([03ffb9f](https://github.com/jjdufu/rtkk/commit/03ffb9f883dee660a913f53914c5e122902619bf))
+
 ## [0.0.5](https://github.com/jjdufu/rtkk/compare/v0.0.4...v0.0.5) (2026-11-22)
 
 
