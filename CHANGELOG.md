@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.5](https://github.com/jjdufu/rtkk/compare/v0.0.4...v0.0.5) (2026-11-22)
+
+
+### Features
+
+* **configs:** 新增 Debian 13 节点预检、依赖包分级收敛与内核基线配置 ([253dfbb](https://github.com/jjdufu/rtkk/commit/253dfbb67fdb5c3503e0742912bd42d5d2ce7aa7))
+
 ## [0.0.4](https://github.com/jjdufu/rtkk/compare/v0.0.3...v0.0.4) (2026-11-22)
 
 
