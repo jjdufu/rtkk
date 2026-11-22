@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.4](https://github.com/jjdufu/rtkk/compare/v0.0.3...v0.0.4) (2026-11-22)
+
+
+### Features
+
+* **connector,configs:** 新增普通用户 su 密码提权支持并保护 prep hosts 主机名映射 ([050d59f](https://github.com/jjdufu/rtkk/commit/050d59fd48336e339313dee9430d564132606b94))
+
 ## [0.0.3](https://github.com/jjdufu/rtkk/compare/v0.0.2...v0.0.3) (2026-11-21)
 
 
