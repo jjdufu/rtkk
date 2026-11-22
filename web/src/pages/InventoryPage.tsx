@@ -67,7 +67,9 @@ const CNI_OPTIONS: readonly SelectOption[] = [
 
 const VALIDITY_OPTIONS: readonly SelectOption[] = [
   { value: "867240h", label: "99 年 (867240h)" },
+  { value: "876000h", label: "100 年 (876000h)" },
   { value: "87600h", label: "10 年 (87600h)" },
+  { value: "26280h", label: "3 年 (26280h)" },
   { value: "8760h", label: "1 年 (8760h)" },
 ];
 
@@ -192,7 +194,11 @@ export function InventoryPage() {
     setInventoryDoc((prev) => {
       const next = cloneDeepRecord(prev);
       const nextVars = asRecord(next["vars"]);
-      nextVars[key] = value;
+      if (value === undefined) {
+        delete nextVars[key];
+      } else {
+        nextVars[key] = value;
+      }
       next["vars"] = nextVars;
       return next;
     });
@@ -559,6 +565,13 @@ export function InventoryPage() {
   const publicRegistriesList = asStringArray(varsRec["public_registries"]);
   const extraAptList = asStringArray(varsRec["extra_apt_packages"]);
   const customManifestsList = asStringArray(varsRec["custom_manifests"]);
+  const currentCertValidity = asString(varsRec["cert_validity"], "867240h").trim() || "867240h";
+  const certValidityOptions = useMemo<readonly SelectOption[]>(() => {
+    if (VALIDITY_OPTIONS.some((opt) => opt.value === currentCertValidity)) {
+      return VALIDITY_OPTIONS;
+    }
+    return [{ value: currentCertValidity, label: currentCertValidity }, ...VALIDITY_OPTIONS];
+  }, [currentCertValidity]);
 
   return (
     <div className="space-y-4 max-w-6xl">
@@ -778,6 +791,52 @@ export function InventoryPage() {
                     </div>
                   </div>
 
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block mb-1 text-xs font-medium">SSH 私钥路径</label>
+                      <input
+                        type="text"
+                        value={asString(varsRec["ansible_ssh_private_key_file"], "")}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          updateVarField(
+                            "ansible_ssh_private_key_file",
+                            raw.trim().length > 0 ? raw : undefined,
+                          );
+                        }}
+                        placeholder="~/.ssh/rtkk_ed25519"
+                        className="park-input font-mono-code"
+                      />
+                    </div>
+                    <div>
+                      <label className="block mb-1 text-xs font-medium">SSH 端口</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={65535}
+                        value={asString(varsRec["ansible_port"], "22")}
+                        onChange={(e) => {
+                          const raw = e.target.value.trim();
+                          if (!raw) {
+                            updateVarField("ansible_port", "");
+                            return;
+                          }
+                          const parsed = Number.parseInt(raw, 10);
+                          if (Number.isFinite(parsed) && parsed >= 1 && parsed <= 65535) {
+                            updateVarField("ansible_port", parsed);
+                          }
+                        }}
+                        onBlur={() => {
+                          if (varsRec["ansible_port"] === "") {
+                            updateVarField("ansible_port", undefined);
+                          }
+                        }}
+                        placeholder="22"
+                        className="park-input tabular-nums font-mono-code"
+                      />
+                    </div>
+                  </div>
+
                   <div className="pt-2 border-t space-y-4" style={{ borderColor: "var(--border)" }}>
                     <Switch
                       checked={asBool(varsRec["ansible_become"], false)}
@@ -912,13 +971,23 @@ export function InventoryPage() {
                   </div>
 
                   <div className="park-card p-5 space-y-4">
-                    <div data-testid="public-registries-insecure-box">
-                      <Switch
-                        checked={asBool(varsRec["public_registries_insecure"], false)}
-                        onChange={(checked) => updateVarField("public_registries_insecure", checked)}
-                        label="公网镜像源 DNS 劫持免证书双栈"
-                        description="开启 public_registries_insecure，生成 skip_verify 与明文回退 hosts.toml"
-                      />
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div data-testid="public-registries-insecure-box">
+                        <Switch
+                          checked={asBool(varsRec["public_registries_insecure"], false)}
+                          onChange={(checked) => updateVarField("public_registries_insecure", checked)}
+                          label="公网镜像源 DNS 劫持免证书双栈"
+                          description="开启 public_registries_insecure，生成 skip_verify 与明文回退 hosts.toml"
+                        />
+                      </div>
+                      <div data-testid="public-registries-auth-box">
+                        <Switch
+                          checked={asBool(varsRec["public_registries_auth"], false)}
+                          onChange={(checked) => updateVarField("public_registries_auth", checked)}
+                          label="公网镜像源附加私库认证"
+                          description="开启 public_registries_auth，向劫持域名注入 Basic 凭据且收敛 0600"
+                        />
+                      </div>
                     </div>
 
                     <div>
@@ -1101,6 +1170,37 @@ export function InventoryPage() {
                     </div>
                   </div>
 
+                  {asString(varsRec["cni_plugin"], "cilium") === "cilium" ? (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                      <Switch
+                        checked={asBool(varsRec["cilium_kube_proxy_replacement"], false)}
+                        onChange={(checked) =>
+                          updateVarField("cilium_kube_proxy_replacement", checked)
+                        }
+                        label="Cilium KPR 替代 kube-proxy"
+                        description="开启 cilium_kube_proxy_replacement 并注入 API Server 端点"
+                      />
+                      <Switch
+                        checked={asBool(varsRec["cilium_l2_announcements"], false)}
+                        onChange={(checked) => {
+                          setInventoryDoc((prev) => {
+                            const next = cloneDeepRecord(prev);
+                            const nextVars = asRecord(next["vars"]);
+                            nextVars["cilium_l2_announcements"] = checked;
+                            if (checked && !asBool(nextVars["cilium_kube_proxy_replacement"], false)) {
+                              nextVars["cilium_kube_proxy_replacement"] = true;
+                            }
+                            next["vars"] = nextVars;
+                            return next;
+                          });
+                          setEditMode("structured");
+                        }}
+                        label="Cilium L2 负载均衡宣告"
+                        description="开启 cilium_l2_announcements 与 externalIPs 支持 VIP 池"
+                      />
+                    </div>
+                  ) : null}
+
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
                     <Switch
                       checked={asBool(addonsRec["nodelocaldns"], true)}
@@ -1165,8 +1265,8 @@ export function InventoryPage() {
                     </div>
                     <Select
                       label="PKI 证书有效期"
-                      value={asString(varsRec["cert_validity"], "867240h")}
-                      options={VALIDITY_OPTIONS}
+                      value={currentCertValidity}
+                      options={certValidityOptions}
                       onChange={(val) => updateVarField("cert_validity", val)}
                     />
                   </div>
