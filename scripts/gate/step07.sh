@@ -76,6 +76,10 @@ RTKK_PORT=${GATE_PORT}
 TZ=Asia/Shanghai
 EOF
 
+  docker rm -f rtkk-daemon >/dev/null 2>&1 || true
+  docker network rm rtkk-net >/dev/null 2>&1 || true
+  trap 'bash "${compose_sb}/scripts/remove.sh" >/dev/null 2>&1 || true' EXIT
+
   bash "${compose_sb}/scripts/start.sh"
   wait_daemon_ready "http://127.0.0.1:${GATE_PORT}/api/v1/health" 30
 
@@ -84,11 +88,23 @@ EOF
   assert_contains "$status_out" "${GATE_PORT}" "status.sh must report mapped host port"
 
   assert_file_exists "${compose_sb}/data/configs/inventory.yaml"
-  assert_file_exists "${compose_sb}/data/.rtkk-daemon/admin.token"
+  if [[ "$(id -u)" -eq 0 ]]; then
+    assert_file_exists "${compose_sb}/data/.rtkk-daemon/admin.token"
+    assert_file_mode "${compose_sb}/data/.rtkk-daemon" "700"
+    assert_file_mode "${compose_sb}/data/.rtkk-daemon/admin.token" "600"
+  else
+    docker exec rtkk-daemon test -f /data/.rtkk-daemon/admin.token
+    local daemon_dir_mode token_file_mode
+    daemon_dir_mode="$(docker exec rtkk-daemon stat -c '%a' /data/.rtkk-daemon)"
+    token_file_mode="$(docker exec rtkk-daemon stat -c '%a' /data/.rtkk-daemon/admin.token)"
+    assert_eq "$daemon_dir_mode" "700" "/data/.rtkk-daemon inside container must be mode 700"
+    assert_eq "$token_file_mode" "600" "/data/.rtkk-daemon/admin.token inside container must be mode 600"
+  fi
 
   bash "${compose_sb}/scripts/down.sh"
   assert_file_exists "${compose_sb}/data/configs/inventory.yaml"
   bash "${compose_sb}/scripts/remove.sh"
+  trap - EXIT
 }
 
 run_assertion "playwright-parkui-offline-e2e" test_playwright_parkui_offline_e2e

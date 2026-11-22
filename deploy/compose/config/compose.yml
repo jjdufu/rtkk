@@ -1,0 +1,33 @@
+name: rtkk
+services:
+  rtkk:
+    image: dex2all/rtkk:${RTKK_VERSION?}
+    container_name: rtkk-daemon
+    restart: unless-stopped
+    user: "10001:10001"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      RTKK_BIND_ADDR: "0.0.0.0:19912"
+      RTKK_WORK_DIR: "/data"
+    volumes:
+      - ../data:/data
+      - ../logs:/data/logs
+      - ../backups:/data/rtkk_bak
+    ports:
+      - "0.0.0.0:${RTKK_PORT?}:19912"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    mem_limit: 1g
+    cpus: "2"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/rtkk", "healthcheck", "--url", "http://127.0.0.1:19912/api/v1/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    networks:
+      - rtkk_net
+
+networks:
+  rtkk_net:
+    name: rtkk-net
