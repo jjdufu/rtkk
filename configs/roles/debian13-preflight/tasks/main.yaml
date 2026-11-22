@@ -1,0 +1,126 @@
+- name: Verify Debian 13 OS release, CPU architecture, and cgroup v2
+  shell: |
+    set -eu
+    if [ ! -f /etc/os-release ]; then
+      echo "/etc/os-release missing: target node must run Debian 13 (trixie)" >&2
+      exit 1
+    fi
+    . /etc/os-release
+    if [ "${ID:-}" != "debian" ] || [ "${VERSION_ID:-}" != "13" ]; then
+      echo "Unsupported OS: expected Debian 13 (trixie), got ${PRETTY_NAME:-${ID:-unknown} ${VERSION_ID:-unknown}}" >&2
+      exit 1
+    fi
+    expected_arch='{{ if eq (default "amd64" .download_arch) "arm64" }}aarch64{{ else }}x86_64{{ end }}'
+    actual_arch="$(uname -m)"
+    if [ "$actual_arch" != "$expected_arch" ]; then
+      echo "CPU architecture mismatch: expected $expected_arch (download_arch={{ default "amd64" .download_arch }}), got $actual_arch" >&2
+      exit 1
+    fi
+    cg_fs="$(stat -fc %T /sys/fs/cgroup 2>/dev/null || true)"
+    if [ "$cg_fs" != "cgroup2fs" ]; then
+      echo "cgroup v2 is required by Kubernetes >= 1.35: /sys/fs/cgroup is '$cg_fs' (expected 'cgroup2fs')" >&2
+      exit 1
+    fi
+  changed_when: "false"
+  tags: ["preflight", "check"]
+
+- name: Verify kube-vip network interface exists on control plane nodes
+  shell: |
+    if ! ip link show dev '{{ .vip_interface }}' >/dev/null 2>&1; then
+      avail="$(ip -o link show | awk -F': ' '{print $2}' | tr '\n' ' ')"
+      echo "vip_interface '{{ .vip_interface }}' does not exist on {{ .inventory_hostname }}; available interfaces: $avail" >&2
+      exit 1
+    fi
+  when: 'has .inventory_hostname .groups.kube_control_plane'
+  changed_when: "false"
+  tags: ["preflight", "check"]
+
+- name: Detect missing required Debian 13 system packages
+  shell: |
+    missing=""
+    for pkg in {{- range .required_apt_packages }} '{{ . }}'{{- end }}{{- if .extra_apt_packages }}{{- range .extra_apt_packages }} '{{ . }}'{{- end }}{{- end }}; do
+      if ! dpkg-query -W -f='${Status}\n' "$pkg" 2>/dev/null | grep -qx 'install ok installed'; then
+        missing="${missing:+$missing }$pkg"
+      fi
+    done
+    printf '%s' "$missing"
+  register: missing_deb_pkgs
+  changed_when: "false"
+  tags: ["preflight", "check", "deps"]
+
+- name: Upload offline Debian 13 .deb bundle when present on control host
+  copy:
+    src: '{{ default "./downloads/tar/debian13-deps.tar.gz" .debian_deps_archive }}'
+    dest: "/tmp/debian13-deps.tar.gz"
+    mode: "0644"
+  when: '{{- if .missing_deb_pkgs -}}{{ and (not (empty .missing_deb_pkgs.stdout)) (fileExists (default "./downloads/tar/debian13-deps.tar.gz" .debian_deps_archive)) }}{{- else -}}false{{- end -}}'
+  tags: ["preflight", "deps"]
+
+- name: Install offline Debian 13 .deb bundle via dpkg
+  shell: |
+    set -eu
+    rm -rf /tmp/rtkk-debs && mkdir -p /tmp/rtkk-debs
+    tar -C /tmp/rtkk-debs -xzf /tmp/debian13-deps.tar.gz
+    DEBIAN_FRONTEND=noninteractive dpkg -i -E /tmp/rtkk-debs/*.deb || DEBIAN_FRONTEND=noninteractive dpkg --configure -a
+    rm -rf /tmp/rtkk-debs /tmp/debian13-deps.tar.gz
+  when: '{{- if .missing_deb_pkgs -}}{{ and (not (empty .missing_deb_pkgs.stdout)) (fileExists (default "./downloads/tar/debian13-deps.tar.gz" .debian_deps_archive)) }}{{- else -}}false{{- end -}}'
+  tags: ["preflight", "deps"]
+
+- name: Re-check remaining missing Debian 13 packages after offline bundle
+  shell: |
+    missing=""
+    for pkg in {{- range .required_apt_packages }} '{{ . }}'{{- end }}{{- if .extra_apt_packages }}{{- range .extra_apt_packages }} '{{ . }}'{{- end }}{{- end }}; do
+      if ! dpkg-query -W -f='${Status}\n' "$pkg" 2>/dev/null | grep -qx 'install ok installed'; then
+        missing="${missing:+$missing }$pkg"
+      fi
+    done
+    printf '%s' "$missing"
+  when: '{{- if .missing_deb_pkgs -}}{{ not (empty .missing_deb_pkgs.stdout) }}{{- else -}}false{{- end -}}'
+  register: remaining_deb_pkgs
+  changed_when: "false"
+  tags: ["preflight", "deps"]
+
+- name: Install remaining missing Debian 13 packages via apt-get
+  shell: |
+    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 update && \
+    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y --no-install-recommends {{ .remaining_deb_pkgs.stdout }}
+  when: '{{- if not .missing_deb_pkgs -}}false{{- else if empty .missing_deb_pkgs.stdout -}}false{{- else if not .remaining_deb_pkgs -}}false{{- else if empty .remaining_deb_pkgs.stdout -}}false{{- else -}}{{ and (ne .auto_install_apt_deps false) (ne .auto_install_apt_deps "false") }}{{- end -}}'
+  tags: ["preflight", "deps"]
+
+- name: Verify all required Debian 13 packages and system tools are ready
+  shell: |
+    set -eu
+    still_missing=""
+    for pkg in {{- range .required_apt_packages }} '{{ . }}'{{- end }}{{- if .extra_apt_packages }}{{- range .extra_apt_packages }} '{{ . }}'{{- end }}{{- end }}; do
+      if ! dpkg-query -W -f='${Status}\n' "$pkg" 2>/dev/null | grep -qx 'install ok installed'; then
+        still_missing="${still_missing:+$still_missing }$pkg"
+      fi
+    done
+    if [ -n "$still_missing" ]; then
+      echo "Missing required Debian 13 packages: $still_missing (enable auto_install_apt_deps or provide {{ default "./downloads/tar/debian13-deps.tar.gz" .debian_deps_archive }})" >&2
+      exit 1
+    fi
+    for bin in conntrack iptables socat ethtool ipset ip modprobe sysctl swapoff tar gzip stat sha256sum base64; do
+      if ! command -v "$bin" >/dev/null 2>&1; then
+        echo "Required system binary '$bin' not found in PATH ($PATH)" >&2
+        exit 1
+      fi
+    done
+  changed_when: "false"
+  tags: ["preflight", "check", "deps"]
+
+- name: Ensure Debian 13 iptables uses normative nftables backend
+  shell: |
+    if [ -x /usr/sbin/iptables-nft ] && command -v update-alternatives >/dev/null 2>&1; then
+      cur="$(readlink -f "$(command -v iptables)" 2>/dev/null || true)"
+      nft_bin="$(readlink -f /usr/sbin/iptables-nft 2>/dev/null || true)"
+      if [ -n "$nft_bin" ] && [ "$cur" != "$nft_bin" ]; then
+        update-alternatives --set iptables /usr/sbin/iptables-nft >/dev/null
+        if [ -x /usr/sbin/ip6tables-nft ]; then
+          update-alternatives --set ip6tables /usr/sbin/ip6tables-nft >/dev/null || true
+        fi
+        printf 'updated'
+      fi
+    fi
+  changed_when: 'eq .stdout "updated"'
+  tags: ["preflight", "deps"]

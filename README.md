@@ -426,11 +426,11 @@ roles:
 
 | 文件路径 | 职责说明 |
 |----------|----------|
-| `configs/download.yaml` | 在 `localhost` 下载离线二进制与归档（kubeadm / kubelet / kubectl / runc / containerd / etcd / CNI / helm / Cilium Helm Chart），并通过内置变量 `{{ .rtkk_exe }}` 与 `{{ .inventory_file }}` 执行 `pull-images` 和按需 `push-images` |
+| `configs/download.yaml` | 在 `localhost` 下载离线二进制与归档（kubeadm / kubelet / kubectl / runc / containerd / etcd / CNI / helm / Cilium Helm Chart），在 Debian 13 主机运行时缓存系统依赖离线包 `debian13-deps.tar.gz`，并通过内置变量 `{{ .rtkk_exe }}` 与 `{{ .inventory_file }}` 执行 `pull-images` 和按需 `push-images` |
 | `configs/images.yaml` | 按 `cni_plugin`、`addons.*` 与 `extra_images` 动态裁剪并定义集群核心与可选插件镜像的源地址与目标私库映射 |
-| `configs/deploy.yaml` | Play 0–9 全自动部署：环境检测清理 → 关闭 swap / 内核模块 / sysctl / DNS → containerd 与私库 `0600` `hosts.toml` → 外部高可用 etcd 集群与证书 → kube-vip 与控制面初始化/扩容 → Worker 加入 → 可插拔 CNI（Cilium 离线 Chart / 自定义模板 / `none`）与可选插件（OpenEBS / NodeLocalDNS）部署 → 集群状态备份至 `./rtkk_bak/` |
+| `configs/deploy.yaml` | Play 0–9 全自动部署：环境检测清理 → Debian 13 节点预检、依赖收敛与内核基线配置（swap / 内核模块 / sysctl / DNS）→ containerd 与私库 `0600` `hosts.toml` → 外部高可用 etcd 集群与证书 → kube-vip 与控制面初始化/扩容 → Worker 加入 → 可插拔 CNI（Cilium 离线 Chart / 自定义模板 / `none`）与可选插件（OpenEBS / NodeLocalDNS）部署 → 集群状态备份至 `./rtkk_bak/` |
 | `configs/cleanup.yaml` | 停止相关服务、执行 `kubeadm reset`、清理运行时目录、证书与二进制文件 |
-| `configs/roles/*` | 可插拔集群扩展组件 Role（`cni-cilium`、`addon-openebs`、`addon-nodelocaldns`、`custom-manifests`） |
+| `configs/roles/*` | 节点预检与可插拔扩展组件 Role（`debian13-preflight`、`cni-cilium`、`addon-openebs`、`addon-nodelocaldns`、`custom-manifests`） |
 | `configs/templates/*.gtmpl` | `kubeadm`（`v1beta4`，面向 K8s `>= v1.31`）、`containerd`（按 `containerd_version` 自动切换 `1.x` `version = 2` 与 `2.x` `version = 3`）、`etcd`、`cilium-values`（离线 Helm Chart 参数模板）、`local-volume`、`nodelocaldns` 渲染模板 |
 
 ---
@@ -456,7 +456,11 @@ mkdir -p logs downloads/{bin,tar,images}
 ./target/release/rtkk prep hosts \
   -i configs/inventory.yaml -l logs/prep-hosts.log
 
-# 4) 执行离线高可用 Kubernetes 集群部署
+# 4) （可选）仅执行节点只读环境预检（--tags check）或预检并收敛依赖与内核基线（--tags preflight）
+./target/release/rtkk run configs/deploy.yaml \
+  -i configs/inventory.yaml --tags check -l logs/check.log
+
+# 5) 执行离线高可用 Kubernetes 集群部署（Play 1 内含自动预检与基线收敛）
 ./target/release/rtkk run configs/deploy.yaml \
   -i configs/inventory.yaml -l logs/deploy.log
 ```

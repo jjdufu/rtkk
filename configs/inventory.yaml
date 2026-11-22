@@ -77,6 +77,9 @@ vars:
   custom_manifests: []
   # Optional extra images ({name, source, target}) synchronized alongside core images
   extra_images: []
+  # Debian 13 system dependency auto-convergence (uses ./downloads/tar/debian13-deps.tar.gz if present, else apt-get)
+  auto_install_apt_deps: true
+  extra_apt_packages: []
   dns_upstream: "10.0.0.111"
 hosts:
   c23-p61: 10.0.0.61

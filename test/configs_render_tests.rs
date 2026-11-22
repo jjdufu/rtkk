@@ -786,27 +786,204 @@ fn deploy_hosts_sync_task_preserves_existing_prep_hosts_block() -> Result<(), St
 
     let prepared = "127.0.0.1 localhost\n# RTKK HOSTS START\n10.0.0.61 c23-p61 os-host-p61\n# RTKK HOSTS END\n";
     std::fs::write(&tmp_hosts, prepared).map_err(|e| e.to_string())?;
-    let st1 = std::process::Command::new("/bin/sh")
+    let out1 = std::process::Command::new("/bin/sh")
         .arg("-c")
         .arg(&sandbox_script)
-        .status()
+        .output()
         .map_err(|e| e.to_string())?;
     let after_prepared = std::fs::read_to_string(&tmp_hosts).map_err(|e| e.to_string())?;
     ensure(
-        st1.success() && after_prepared.contains("os-host-p61"),
+        out1.status.success() && after_prepared.contains("os-host-p61"),
         "deploy.yaml must preserve OS hostname entries written by `rtkk prep hosts`",
     )?;
 
     std::fs::write(&tmp_hosts, "127.0.0.1 localhost\n").map_err(|e| e.to_string())?;
-    let st2 = std::process::Command::new("/bin/sh")
+    let out2 = std::process::Command::new("/bin/sh")
         .arg("-c")
         .arg(&sandbox_script)
-        .status()
+        .output()
         .map_err(|e| e.to_string())?;
     let after_bare = std::fs::read_to_string(&tmp_hosts).map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(&tmp_hosts);
     ensure(
-        st2.success() && after_bare.contains("10.0.0.61 c23-p61"),
+        out2.status.success() && after_bare.contains("10.0.0.61 c23-p61"),
         "deploy.yaml must populate fallback /etc/hosts block when prep hosts has not run",
+    )
+}
+
+fn check_posix_sh_syntax(label: &str, script: &str) -> Result<(), String> {
+    let out = std::process::Command::new("/bin/sh")
+        .arg("-n")
+        .arg("-c")
+        .arg(script)
+        .output()
+        .map_err(|e| format!("{label}: failed to spawn /bin/sh -n: {e}"))?;
+    ensure(
+        out.status.success(),
+        &format!(
+            "{label}: /bin/sh -n syntax check failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    )
+}
+
+fn merge_task_role_defaults(base_vars: &Value, task: &rtkk::tasks::Task) -> Value {
+    let mut merged = base_vars.clone();
+    if let Some(defaults) = task.role_defaults.as_ref()
+        && let Some(obj) = merged.as_object_mut()
+    {
+        for (k, v) in defaults {
+            if !obj.contains_key(k) {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    merged
+}
+
+#[test]
+fn debian13_preflight_role_propagates_defaults_validates_shell_and_conditions() -> Result<(), String>
+{
+    let pb = compile_playbook(&configs_dir().join("deploy.yaml"))?;
+    let play1 =
+        pb.0.iter()
+            .find(|p| p.name.as_deref().is_some_and(|n| n.contains("Play 1")))
+            .ok_or("missing Play 1 in deploy.yaml")?;
+    let tasks = play1.tasks.as_ref().ok_or("Play 1 has no tasks")?;
+
+    let inv = load_base_inventory()?;
+    let flat = finalize_flat_inventory(&inv)?;
+    let mut hostvars_map = serde_json::Map::new();
+    for (h, hv) in &flat.host_vars {
+        hostvars_map.insert(
+            h.clone(),
+            serde_json::to_value(hv).map_err(|e| e.to_string())?,
+        );
+    }
+    let mut cp_base = host_context_json(&flat, "c23-p61")?;
+    let worker_base = host_context_json(&flat, "c23-p64")?;
+    if let Some(obj) = cp_base.as_object_mut() {
+        obj.insert("hostvars".to_string(), Value::Object(hostvars_map));
+        obj.insert(
+            "remaining_deb_pkgs".to_string(),
+            json!({ "stdout": "conntrack ipset" }),
+        );
+    }
+
+    for task in tasks {
+        let name = task.name.as_deref().unwrap_or("unnamed");
+        let vars = merge_task_role_defaults(&cp_base, task);
+        if let Some(raw_shell) = task.shell.as_ref().and_then(Value::as_str) {
+            let rendered = render_template_string(raw_shell, &json_to_gtmpl(&vars))?;
+            ensure(
+                !rendered.contains("<no value>") && !rendered.contains("{{"),
+                &format!("Play 1 task '{name}' rendered incomplete template:\n{rendered}"),
+            )?;
+            check_posix_sh_syntax(name, &rendered)?;
+        }
+    }
+
+    verify_debian13_preflight_conditions(tasks, &cp_base, &worker_base)?;
+
+    let dl_pb = compile_playbook(&configs_dir().join("download.yaml"))?;
+    let dl_tasks = dl_pb
+        .0
+        .first()
+        .and_then(|p| p.tasks.as_ref())
+        .ok_or("download.yaml missing tasks")?;
+    let deb_cache_task = dl_tasks
+        .iter()
+        .find(|t| t.name.as_deref().is_some_and(|n| n.contains(".deb")))
+        .ok_or("missing .deb cache task in download.yaml")?;
+    let deb_script = deb_cache_task
+        .shell
+        .as_ref()
+        .and_then(Value::as_str)
+        .ok_or("expected shell on .deb cache task")?;
+    let rendered_dl = render_template_string(deb_script, &json_to_gtmpl(&cp_base))?;
+    check_posix_sh_syntax("download.yaml .deb cache", &rendered_dl)
+}
+
+fn verify_debian13_preflight_conditions(
+    tasks: &[rtkk::tasks::Task],
+    cp_base: &Value,
+    worker_base: &Value,
+) -> Result<(), String> {
+    let vip_task = tasks
+        .iter()
+        .find(|t| t.name.as_deref().is_some_and(|n| n.contains("kube-vip")))
+        .ok_or("missing kube-vip interface check task")?;
+    let vip_when = vip_task.when.as_ref().ok_or("missing when on vip check")?;
+    ensure(
+        eval_condition(vip_when, cp_base)? && !eval_condition(vip_when, worker_base)?,
+        "kube-vip interface check must run on control plane nodes only",
+    )?;
+
+    let detect_task = tasks
+        .iter()
+        .find(|t| {
+            t.name
+                .as_deref()
+                .is_some_and(|n| n.contains("Detect missing"))
+        })
+        .ok_or("missing Detect missing packages task")?;
+    let mut with_extra = merge_task_role_defaults(cp_base, detect_task);
+    if let Some(obj) = with_extra.as_object_mut() {
+        obj.insert("extra_apt_packages".to_string(), json!(["chrony"]));
+    }
+    let detect_shell = detect_task
+        .shell
+        .as_ref()
+        .and_then(Value::as_str)
+        .ok_or("missing shell on detect_task")?;
+    let detect_rendered = render_template_string(detect_shell, &json_to_gtmpl(&with_extra))?;
+    ensure(
+        detect_rendered.contains("'conntrack'")
+            && detect_rendered.contains("'iptables'")
+            && detect_rendered.contains("'chrony'"),
+        "Detect missing packages script must combine role defaults and extra_apt_packages",
+    )?;
+
+    let apt_task = tasks
+        .iter()
+        .find(|t| t.name.as_deref().is_some_and(|n| n.contains("via apt-get")))
+        .ok_or("missing apt-get install task")?;
+    let apt_when = apt_task.when.as_ref().ok_or("missing when on apt_task")?;
+    let base_vars = merge_task_role_defaults(worker_base, apt_task);
+    ensure(
+        !eval_condition(apt_when, &base_vars)?,
+        "apt-get task must skip safely when missing_deb_pkgs is unset",
+    )?;
+
+    let mut clean_node = base_vars.clone();
+    if let Some(obj) = clean_node.as_object_mut() {
+        obj.insert("missing_deb_pkgs".to_string(), json!({ "stdout": "" }));
+    }
+    ensure(
+        !eval_condition(apt_when, &clean_node)?,
+        "apt-get task must skip when missing_deb_pkgs.stdout is empty",
+    )?;
+
+    let mut missing_node = base_vars;
+    if let Some(obj) = missing_node.as_object_mut() {
+        obj.insert(
+            "missing_deb_pkgs".to_string(),
+            json!({ "stdout": "conntrack" }),
+        );
+        obj.insert(
+            "remaining_deb_pkgs".to_string(),
+            json!({ "stdout": "conntrack" }),
+        );
+    }
+    ensure(
+        eval_condition(apt_when, &missing_node)?,
+        "apt-get task must run when packages remain missing and auto_install_apt_deps is true",
+    )?;
+    if let Some(obj) = missing_node.as_object_mut() {
+        obj.insert("auto_install_apt_deps".to_string(), json!(false));
+    }
+    ensure(
+        !eval_condition(apt_when, &missing_node)?,
+        "apt-get task must skip when auto_install_apt_deps is false",
     )
 }

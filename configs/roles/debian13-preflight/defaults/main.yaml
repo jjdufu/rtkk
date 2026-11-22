@@ -1,0 +1,13 @@
+auto_install_apt_deps: true
+debian_deps_archive: "./downloads/tar/debian13-deps.tar.gz"
+required_apt_packages:
+  - conntrack
+  - iptables
+  - socat
+  - ethtool
+  - ipset
+  - ca-certificates
+  - kmod
+  - procps
+  - iproute2
+extra_apt_packages: []

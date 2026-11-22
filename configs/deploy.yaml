@@ -51,11 +51,25 @@
       when: 'eq (printf "%v" (default false .force_reinstall)) "true"'
       ignore_errors: true
 
-- name: Play 1 - Prepare Node System Configurations
+- name: Play 1 - Preflight Debian 13 Dependencies and Node System Baseline
   hosts: all
+  roles:
+    - role: debian13-preflight
   tasks:
     - name: Disable swap permanently
-      shell: "swapoff -a && sed -ri '/^[^#]*swap/s/^/#/' /etc/fstab"
+      shell: |
+        changed="false"
+        if [ -n "$(swapon --show --noheadings 2>/dev/null || true)" ]; then
+          swapoff -a
+          changed="true"
+        fi
+        if grep -qE '^[^#].*\bswap\b' /etc/fstab 2>/dev/null; then
+          sed -ri '/^[^#]*\bswap\b/s/^/#/' /etc/fstab
+          changed="true"
+        fi
+        printf '%s' "$changed"
+      changed_when: 'eq .stdout "true"'
+      tags: ["preflight", "baseline"]
     - name: Synchronize cluster hosts entries in /etc/hosts when not already prepared
       shell: |
         if ! grep -q '^# RTKK HOSTS START$' /etc/hosts 2>/dev/null || [ '{{ default "false" .force_hosts_sync }}' = 'true' ]; then
@@ -67,34 +81,64 @@
         {{- end }}
         # RTKK HOSTS END
         EOF
+        printf 'updated'
         fi
+      changed_when: 'eq .stdout "updated"'
+      tags: ["preflight", "baseline"]
     - name: Load bridge netfilter module
       modprobe:
         name: br_netfilter
         state: present
+      tags: ["preflight", "baseline"]
     - name: Load overlay module
       modprobe:
         name: overlay
         state: present
+      tags: ["preflight", "baseline"]
     - name: Load conntrack module
       modprobe:
         name: nf_conntrack
         state: present
+      tags: ["preflight", "baseline"]
     - name: Enable IPv4 packet forwarding
       sysctl:
         name: net.ipv4.ip_forward
         value: "1"
         sysctl_file: "/etc/sysctl.d/99-kubernetes.conf"
+      tags: ["preflight", "baseline"]
     - name: Enable bridge netfilter iptables call
       sysctl:
         name: net.bridge.bridge-nf-call-iptables
         value: "1"
         sysctl_file: "/etc/sysctl.d/99-kubernetes.conf"
+      tags: ["preflight", "baseline"]
+    - name: Enable bridge netfilter ip6tables call
+      sysctl:
+        name: net.bridge.bridge-nf-call-ip6tables
+        value: "1"
+        sysctl_file: "/etc/sysctl.d/99-kubernetes.conf"
+      tags: ["preflight", "baseline"]
+    - name: Tune fs.inotify.max_user_instances for Kubernetes nodes
+      sysctl:
+        name: fs.inotify.max_user_instances
+        value: "8192"
+        sysctl_file: "/etc/sysctl.d/99-kubernetes.conf"
+      tags: ["preflight", "baseline"]
+    - name: Tune fs.inotify.max_user_watches for Kubernetes nodes
+      sysctl:
+        name: fs.inotify.max_user_watches
+        value: "524288"
+        sysctl_file: "/etc/sysctl.d/99-kubernetes.conf"
+      tags: ["preflight", "baseline"]
     - name: Ensure upstream DNS is configured when resolv.conf has no nameserver
-      shell: "grep -q 'nameserver' /etc/resolv.conf || echo 'nameserver {{ .dns_upstream }}' >> /etc/resolv.conf"
+      shell: "if ! grep -q 'nameserver' /etc/resolv.conf 2>/dev/null; then echo 'nameserver {{ .dns_upstream }}' >> /etc/resolv.conf && printf 'updated'; fi"
+      changed_when: 'eq .stdout "updated"'
+      tags: ["preflight", "baseline"]
     - name: Detect active upstream resolv.conf path for kubelet
       shell: "if [ -f /run/systemd/resolve/resolv.conf ] && grep -q '127.0.0.53' /etc/resolv.conf 2>/dev/null; then printf '/run/systemd/resolve/resolv.conf'; else printf '/etc/resolv.conf'; fi"
       register: detected_resolv_conf
+      changed_when: "false"
+      tags: ["preflight", "baseline"]
 
 - name: Play 2 - Install Containerd Runtime and Kubernetes Binaries
   hosts: k8s_cluster

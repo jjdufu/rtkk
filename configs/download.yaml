@@ -62,6 +62,18 @@
         mode: "0644"
       when: 'eq (default "cilium" .cni_plugin) "cilium"'
       tags: ["download", "charts"]
+    - name: Cache offline Debian 13 .deb dependency bundle when running on Debian 13
+      shell: |
+        if [ -f /etc/os-release ] && . /etc/os-release && [ "${ID:-}" = "debian" ] && [ "${VERSION_ID:-}" = "13" ] && command -v apt-get >/dev/null 2>&1 && command -v apt-cache >/dev/null 2>&1; then
+          rm -rf ./downloads/tmp-debs && mkdir -p ./downloads/tmp-debs
+          pkgs="$(apt-cache depends --recurse --no-recommends --no-suggests --no-conflicts --no-breaks --no-replaces --no-enhances conntrack iptables socat ethtool ipset ca-certificates kmod procps iproute2 {{- if .extra_apt_packages }}{{- range .extra_apt_packages }} '{{ . }}'{{- end }}{{- end }} | grep '^[a-z0-9]' | sort -u | tr '\n' ' ')"
+          (cd ./downloads/tmp-debs && apt-get download $pkgs) && tar -C ./downloads/tmp-debs -czf '{{ default "./downloads/tar/debian13-deps.tar.gz" .debian_deps_archive }}' . && rm -rf ./downloads/tmp-debs
+          printf 'cached'
+        else
+          printf 'skipped'
+        fi
+      changed_when: 'eq .stdout "cached"'
+      tags: ["download", "debs"]
     - name: Pull public images to local tarballs
       command: '{{ default .rtkk_bin .rtkk_exe }} pull-images -i {{ default "configs/inventory.yaml" .inventory_file }} --images-file {{ default "configs/images.yaml" .images_file }} -l logs/pull-images.log'
       tags: ["download", "images"]
