@@ -1,4 +1,5 @@
 import {
+  Database,
   FileCode2,
   LayoutDashboard,
   LogOut,
@@ -17,6 +18,7 @@ const ROUTE_ICONS: Record<Exclude<RouteKey, "login">, ReactNode> = {
   inventory: <Server size={16} />,
   templates: <FileCode2 size={16} />,
   artifacts: <Package size={16} />,
+  harbor: <Database size={16} />,
   operations: <Play size={16} />,
   pki: <ShieldCheck size={16} />,
 };

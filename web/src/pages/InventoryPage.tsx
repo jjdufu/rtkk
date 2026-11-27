@@ -81,11 +81,21 @@ const DEFAULT_PUBLIC_REGISTRY_MIRRORS: ReadonlyArray<{ readonly host: string; re
   { host: "quay.io", project: "quay" },
   { host: "gcr.io", project: "gcr" },
   { host: "k8s.gcr.io", project: "gcr" },
+  { host: "mirror.gcr.io", project: "gcr" },
   { host: "ghcr.io", project: "ghcr" },
   { host: "mcr.microsoft.com", project: "mcr" },
   { host: "public.ecr.aws", project: "ecr-public" },
   { host: "nvcr.io", project: "nvcr" },
   { host: "registry.gitlab.com", project: "gitlab" },
+  { host: "code.forgejo.org", project: "forgejo" },
+  { host: "higress-registry.cn-hangzhou.cr.aliyuncs.com", project: "higress" },
+  { host: "registry.cn-hangzhou.cr.aliyuncs.com", project: "aliyun-hz" },
+  { host: "lscr.io", project: "lscr" },
+  { host: "docker.elastic.co", project: "elastic" },
+  { host: "icr.io", project: "icr" },
+  { host: "registry.redhat.io", project: "redhat" },
+  { host: "registry.access.redhat.com", project: "redhat" },
+  { host: "cgr.dev", project: "chainguard" },
 ];
 
 function asRecord(val: unknown): Record<string, unknown> {
@@ -989,7 +999,7 @@ export function InventoryPage() {
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div data-testid="enable-public-registry-mirrors-box">
                         <Switch
-                          checked={asBool(varsRec["enable_public_registry_mirrors"], false)}
+                          checked={asBool(varsRec["enable_public_registry_mirrors"], true)}
                           onChange={(checked) => {
                             setInventoryDoc((prev) => {
                               const next = cloneDeepRecord(prev);
@@ -1002,6 +1012,9 @@ export function InventoryPage() {
                               }
                               if (checked && nextVars["auto_create_mirror_projects"] === undefined) {
                                 nextVars["auto_create_mirror_projects"] = true;
+                              }
+                              if (checked && nextVars["public_registry_default_mirror_project"] === undefined) {
+                                nextVars["public_registry_default_mirror_project"] = "external";
                               }
                               next["vars"] = nextVars;
                               return next;
@@ -1017,9 +1030,94 @@ export function InventoryPage() {
                           checked={asBool(varsRec["auto_create_mirror_projects"], true)}
                           onChange={(checked) => updateVarField("auto_create_mirror_projects", checked)}
                           label="自动建映射项目"
-                          description="部署时在 Harbor 自动创建去重源站项目"
+                          description="部署时在 Harbor 自动创建去重源站与兜底项目"
                         />
                       </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div data-testid="public-registry-mirrors-fallback-box">
+                        <Switch
+                          checked={asBool(varsRec["public_registry_mirrors_fallback"], false)}
+                          onChange={(checked) =>
+                            updateVarField("public_registry_mirrors_fallback", checked)
+                          }
+                          label="允许回退外网源"
+                          description="关闭时省略 hosts.toml 的 server 字段，私库缺失即报错不回退外网"
+                        />
+                      </div>
+                      <div>
+                        <label
+                          htmlFor="default-mirror-project-input"
+                          className="block mb-1 text-xs font-medium"
+                        >
+                          全局兜底项目（_default，留空关闭）
+                        </label>
+                        <input
+                          id="default-mirror-project-input"
+                          type="text"
+                          value={asString(varsRec["public_registry_default_mirror_project"], "")}
+                          onChange={(e) =>
+                            updateVarField("public_registry_default_mirror_project", e.target.value)
+                          }
+                          placeholder="external"
+                          className="park-input font-mono-code"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="text-xs font-medium">
+                          透明源站映射表（每行格式：外部域名=Harbor项目）
+                        </label>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() =>
+                            updateVarField(
+                              "public_registry_mirrors",
+                              DEFAULT_PUBLIC_REGISTRY_MIRRORS.map((item) => ({ ...item })),
+                            )
+                          }
+                        >
+                          恢复默认
+                        </Button>
+                      </div>
+                      <textarea
+                        rows={5}
+                        value={(Array.isArray(varsRec["public_registry_mirrors"])
+                          ? (varsRec["public_registry_mirrors"] as unknown[])
+                          : []
+                        )
+                          .map((entry) => {
+                            const rec = asRecord(entry);
+                            const h = asString(rec["host"], "").trim();
+                            const p = asString(rec["project"], "").trim();
+                            return h && p ? `${h}=${p}` : "";
+                          })
+                          .filter(Boolean)
+                          .join("\n")}
+                        onChange={(e) => {
+                          const parsed = e.target.value
+                            .split("\n")
+                            .map((line) => line.trim())
+                            .filter(Boolean)
+                            .map((line) => {
+                              const idx = line.indexOf("=");
+                              if (idx <= 0) {
+                                return null;
+                              }
+                              const host = line.slice(0, idx).trim();
+                              const project = line.slice(idx + 1).trim();
+                              return host && project ? { host, project } : null;
+                            })
+                            .filter((item): item is { host: string; project: string } => item !== null);
+                          updateVarField("public_registry_mirrors", parsed);
+                        }}
+                        placeholder={"docker.io=dockerhub\nregistry.k8s.io=k8s"}
+                        className="park-textarea font-mono-code"
+                      />
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

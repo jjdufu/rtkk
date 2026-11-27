@@ -139,6 +139,7 @@ test.describe.serial("Park UI Five Mandatory Offline Gates & Full Business Journ
       { key: "inventory", path: "/inventory", title: "集群配置", expectsArkSelect: true },
       { key: "templates", path: "/templates", title: "模板预览", expectsArkSelect: true },
       { key: "artifacts", path: "/artifacts", title: "离线资源", expectsArkSelect: false },
+      { key: "harbor", path: "/harbor", title: "私库管理", expectsArkSelect: true },
       { key: "operations", path: "/operations", title: "编排执行", expectsArkSelect: true },
       { key: "pki", path: "/pki", title: "证书备份", expectsArkSelect: false },
     ];

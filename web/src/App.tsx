@@ -11,6 +11,7 @@ import { setUnauthorizedHandler } from "./lib/api/client";
 import { ThemeProvider } from "./lib/theme";
 import { resolveRouteByPath } from "./modules/registry";
 import { ArtifactsPage } from "./pages/ArtifactsPage";
+import { HarborPage } from "./pages/HarborPage";
 import { InventoryPage } from "./pages/InventoryPage";
 import { LoginPage } from "./pages/LoginPage";
 import { OperationsPage } from "./pages/OperationsPage";
@@ -151,6 +152,8 @@ function RouterRoot() {
         <TemplatesPage onNavigate={(p) => navigate(p)} />
       ) : route.key === "artifacts" ? (
         <ArtifactsPage />
+      ) : route.key === "harbor" ? (
+        <HarborPage onNavigate={(p) => navigate(p)} />
       ) : route.key === "operations" ? (
         <OperationsPage
           selectedJobId={selectedJobId ?? activeJobId}

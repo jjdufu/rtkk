@@ -1,4 +1,12 @@
-export type RouteKey = "overview" | "inventory" | "templates" | "artifacts" | "operations" | "pki" | "login";
+export type RouteKey =
+  | "overview"
+  | "inventory"
+  | "templates"
+  | "artifacts"
+  | "harbor"
+  | "operations"
+  | "pki"
+  | "login";
 
 export interface RouteEntry {
   key: RouteKey;
@@ -34,6 +42,13 @@ export const ROUTE_REGISTRY: readonly RouteEntry[] = [
     key: "artifacts",
     path: "/artifacts",
     label: "离线资源",
+    requiresAuth: true,
+    showInSidebar: true,
+  },
+  {
+    key: "harbor",
+    path: "/harbor",
+    label: "私库管理",
     requiresAuth: true,
     showInSidebar: true,
   },
