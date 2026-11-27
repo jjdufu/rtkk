@@ -5,6 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 mod client;
+mod harbor_api;
 mod image_list;
 mod legacy_write;
 mod manifest;
@@ -13,10 +14,17 @@ mod mirror;
 mod pull;
 mod tar;
 
+pub use harbor_api::{
+    HarborArtifactInfo, HarborProjectInfo, HarborProjectsOverview, HarborRepositoryInfo,
+    HarborTagInfo, check_manifest_exists, delete_harbor_artifact, encode_harbor_repo_segment,
+    list_harbor_artifacts, list_harbor_projects_reconciled, list_harbor_repositories,
+};
 pub use image_list::{ImageSpec, ImageSyncConfig, SourceAuth};
 pub use mirror::{
-    HarborMirrorSyncOutcome, PublicRegistryMirror, default_public_registry_mirrors,
-    ensure_harbor_mirror_projects,
+    DEFAULT_FALLBACK_MIRROR_PROJECT, HarborMirrorSyncOutcome, PublicRegistryMirror,
+    TransparentMirrorTarget, collect_mirror_project_names, default_public_registry_mirrors,
+    ensure_harbor_mirror_projects, extract_image_refs_from_text, parse_mirror_settings_from_vars,
+    resolve_transparent_target, validate_harbor_project_name,
 };
 
 const fn default_true() -> bool {
@@ -118,10 +126,12 @@ fn build_http_client(
     timeout_secs: u64,
     ca_cert_file: Option<&str>,
 ) -> Result<reqwest::Client, String> {
+    let effective_timeout = timeout_secs.max(1);
+    let connect_secs = effective_timeout.min(15);
     let mut builder = reqwest::Client::builder()
         .danger_accept_invalid_certs(insecure)
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(timeout_secs.max(1)));
+        .connect_timeout(Duration::from_secs(connect_secs))
+        .timeout(Duration::from_secs(effective_timeout));
     if let Some(ca_path) = ca_cert_file.map(str::trim).filter(|s| !s.is_empty()) {
         let resolved_ca = crate::utils::expand_tilde_path(ca_path);
         let pem_bytes = std::fs::read(&resolved_ca).map_err(|e| {
@@ -720,6 +730,402 @@ pub async fn execute_sync_images(opts: &PullImagesOptions) -> Result<(), String>
     .await?;
     crate::log_println!("Successfully synced {} image(s) to registry.", specs.len());
     Ok(())
+}
+
+/// Execution mode for [`execute_mirror_images`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MirrorExecutionMode {
+    /// Resolve and preview target paths without performing any network pull or push.
+    DryRun,
+    /// Pull upstream images and push them into `Harbor` transparent mirror paths.
+    Execute {
+        /// Re-pull and overwrite even when the target manifest already exists on `Harbor`.
+        force: bool,
+        /// Persist intermediate `.tar` archives under `<output_dir>/mirror/` when `true`.
+        save_tar: bool,
+        /// Append successfully imported entries into `vars.extra_images` inside `inventory.yaml`.
+        append_extra_images: bool,
+    },
+}
+
+/// Options for pulling upstream images and importing them directly into transparent `Harbor` mirror paths.
+#[derive(Debug, Clone)]
+pub struct MirrorImportOptions {
+    /// Path to the cluster `inventory.yaml` file.
+    pub inventory_path: String,
+    /// Raw upstream image references (or newline-separated lists) to import.
+    pub images: Vec<String>,
+    /// Optional target `OCI` platform override (e.g. `"linux/amd64"`).
+    pub platform: Option<String>,
+    /// Optional archive directory override when `save_tar` is enabled.
+    pub output_dir: Option<String>,
+    /// Optional override to skip `TLS` verification when pulling from upstream source registries.
+    pub insecure: Option<bool>,
+    /// Whether to preview (`DryRun`) or execute the pull/push workflow.
+    pub mode: MirrorExecutionMode,
+}
+
+/// Summary outcome of a transparent mirror import execution.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct MirrorImportOutcome {
+    /// Resolved transparent mirror plan entries.
+    pub plans: Vec<TransparentMirrorTarget>,
+    /// Target references newly pulled and pushed to `Harbor`.
+    pub imported: Vec<String>,
+    /// Target references skipped because they already existed on `Harbor` (`!force`).
+    pub skipped: Vec<String>,
+}
+
+fn collect_unique_raw_images(raw_images: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for entry in raw_images {
+        for item in extract_image_refs_from_text(entry) {
+            if seen.insert(item.clone()) {
+                out.push(item);
+            }
+        }
+    }
+    out
+}
+
+fn sanitize_mirror_tar_stem(target_repo: &str, tag: &str) -> String {
+    let mut stem = String::with_capacity(target_repo.len() + tag.len() + 1);
+    for ch in target_repo
+        .chars()
+        .chain(std::iter::once('-'))
+        .chain(tag.chars())
+    {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+            stem.push(ch);
+        } else {
+            stem.push('_');
+        }
+    }
+    if stem.is_empty() {
+        "image".to_string()
+    } else {
+        stem
+    }
+}
+
+/// Plans transparent `Harbor` mirror targets for `raw_images`, optionally probing remote existence.
+///
+/// # Errors
+///
+/// Returns an error if `raw_images` yields no image entries or if probing `registry` fails when
+/// `check_remote` is `true`.
+pub async fn plan_transparent_mirrors(
+    registry: &RegistryConfig,
+    vars: &Value,
+    raw_images: &[String],
+    check_remote: bool,
+) -> Result<Vec<TransparentMirrorTarget>, String> {
+    let parsed_inputs = collect_unique_raw_images(raw_images);
+    if parsed_inputs.is_empty() {
+        return Err("no image references provided".to_string());
+    }
+    let (mirrors, default_proj) = parse_mirror_settings_from_vars(vars);
+    let mut plans = Vec::with_capacity(parsed_inputs.len());
+    for raw in &parsed_inputs {
+        match resolve_transparent_target(raw, &registry.url, &mirrors, default_proj.as_deref()) {
+            Ok(plan) => plans.push(plan),
+            Err(err) => plans.push(TransparentMirrorTarget {
+                raw_input: raw.clone(),
+                normalized_source: String::new(),
+                source_host: String::new(),
+                source_repository: String::new(),
+                tag: String::new(),
+                digest: None,
+                target_project: String::new(),
+                target_repository: String::new(),
+                target_ref: String::new(),
+                matched_rule: String::new(),
+                used_default_fallback: false,
+                project_exists: None,
+                already_exists: None,
+                error: Some(err),
+            }),
+        }
+    }
+
+    if !check_remote {
+        return Ok(plans);
+    }
+
+    let normalized = client::normalize_registry_host_prefix(&registry.url);
+    let Some(domain) = normalized.split('/').next().filter(|s| !s.is_empty()) else {
+        return Ok(plans);
+    };
+    let Ok(http_client) =
+        build_http_client(registry.insecure, 10, registry.ca_cert_file.as_deref())
+    else {
+        return Ok(plans);
+    };
+    let Ok(base_url) = client::probe_registry_base_url(&http_client, domain, registry).await else {
+        return Ok(plans);
+    };
+
+    let existing_projects: Option<std::collections::HashSet<String>> =
+        match list_harbor_projects_reconciled(
+            registry,
+            &mirrors,
+            default_proj.as_deref(),
+            true,
+            false,
+        )
+        .await
+        {
+            Ok(ov) if ov.is_harbor => Some(
+                ov.projects
+                    .into_iter()
+                    .filter(|p| p.exists)
+                    .map(|p| p.name)
+                    .collect(),
+            ),
+            _ => None,
+        };
+
+    for plan in &mut plans {
+        if plan.error.is_some() {
+            continue;
+        }
+        if let Some(ref proj_set) = existing_projects {
+            plan.project_exists = Some(proj_set.contains(&plan.target_project));
+        }
+        if let Ok(exists) = harbor_api::check_manifest_exists_with_client(
+            &http_client,
+            &base_url,
+            registry,
+            &plan.target_repository,
+            &plan.tag,
+        )
+        .await
+        {
+            plan.already_exists = Some(exists);
+        }
+    }
+    Ok(plans)
+}
+
+fn append_extra_images_to_inventory(
+    inventory_path: &str,
+    plans: &[TransparentMirrorTarget],
+) -> Result<(), String> {
+    if plans.is_empty() {
+        return Ok(());
+    }
+    let content = std::fs::read_to_string(inventory_path)
+        .map_err(|e| format!("failed to read {inventory_path} for extra_images update: {e}"))?;
+    let mut doc: Value = serde_yml::from_str(&content)
+        .map_err(|e| format!("failed to parse {inventory_path}: {e}"))?;
+    let vars_obj = doc
+        .get_mut("vars")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| format!("missing vars mapping in {inventory_path}"))?;
+    let entry = vars_obj
+        .entry("extra_images".to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let arr = entry
+        .as_array_mut()
+        .ok_or_else(|| "vars.extra_images must be a YAML list".to_string())?;
+
+    let mut existing_targets: std::collections::HashSet<String> = arr
+        .iter()
+        .filter_map(|item| {
+            item.get("target")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    let mut changed = false;
+    for plan in plans {
+        if existing_targets.insert(plan.target_ref.clone()) {
+            let stem = sanitize_mirror_tar_stem(&plan.target_repository, &plan.tag);
+            arr.push(serde_json::json!({
+                "name": stem,
+                "source": plan.normalized_source,
+                "target": plan.target_ref,
+            }));
+            changed = true;
+        }
+    }
+    if !changed {
+        return Ok(());
+    }
+    let bak_path = format!("{inventory_path}.bak");
+    let _ = std::fs::write(&bak_path, &content);
+    let rendered = serde_yml::to_string(&doc)
+        .map_err(|e| format!("failed to serialize updated inventory YAML: {e}"))?;
+    let tmp_path = format!("{inventory_path}.tmp.{}", std::process::id());
+    std::fs::write(&tmp_path, rendered)
+        .map_err(|e| format!("failed to write temporary inventory {tmp_path}: {e}"))?;
+    std::fs::rename(&tmp_path, inventory_path)
+        .map_err(|e| format!("failed to replace {inventory_path}: {e}"))?;
+    crate::log_println!(
+        "Appended imported mirror image(s) to vars.extra_images in {inventory_path}"
+    );
+    Ok(())
+}
+
+async fn import_single_mirror_plan(
+    pull_client: &reqwest::Client,
+    plan: &TransparentMirrorTarget,
+    sync: &ImageSyncConfig,
+    registry: &RegistryConfig,
+    platform: &(String, String, Option<String>),
+    mirror_tar_dir: Option<&Path>,
+) -> Result<(), String> {
+    let stem = sanitize_mirror_tar_stem(&plan.target_repository, &plan.tag);
+    let spec = ImageSpec {
+        name: stem.clone(),
+        source: plan.normalized_source.clone(),
+        target: plan.target_ref.clone(),
+    };
+    crate::log_println!(
+        "Mirroring {} -> {} (platform {}, rule: {})",
+        spec.source,
+        spec.target,
+        sync.platform,
+        plan.matched_rule
+    );
+    let pulled = pull::pull_image(pull_client, &spec, sync, registry, platform).await?;
+    let temp_tar_guard = if mirror_tar_dir.is_some() {
+        None
+    } else {
+        Some(media::TempDirGuard::new("rtkk-mirror-tar")?)
+    };
+    let tar_path = if let Some(dir) = mirror_tar_dir {
+        dir.join(format!("{stem}.tar"))
+    } else if let Some(ref guard) = temp_tar_guard {
+        guard.path().join(format!("{stem}.tar"))
+    } else {
+        return Err("internal error: missing temporary mirror tar directory".to_string());
+    };
+
+    legacy_write::write_legacy_tar(&pulled, &tar_path)?;
+    pulled.cleanup_temp();
+
+    let tar_str = tar_path.to_string_lossy().into_owned();
+    let target_domain = client::normalize_registry_host_prefix(&registry.url)
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .to_string();
+    let images_to_push = tar::extract_spec_image_to_push(&tar_str, &spec, &target_domain, false)?;
+    push_extracted_images(&tar_str, &images_to_push, registry, sync.http_timeout_secs).await?;
+    drop(temp_tar_guard);
+    crate::log_println!("Imported {} -> {}", spec.source, spec.target);
+    Ok(())
+}
+
+/// Pulls one or more upstream images and imports them directly into their transparent `Harbor` mirror paths.
+///
+/// # Errors
+///
+/// Returns an error if inventory loading fails, any requested image cannot be mapped, upstream pull
+/// fails, or pushing to the private registry fails.
+pub async fn execute_mirror_images(
+    opts: &MirrorImportOptions,
+) -> Result<MirrorImportOutcome, String> {
+    let doc = parse_inventory_doc(&opts.inventory_path).await?;
+    let registry = image_list::registry_from_doc(&doc)?;
+    let (vars, mut sync) = image_list::extract_vars_and_sync(&doc)?;
+    if let Some(ref d) = opts.output_dir {
+        sync.output_dir.clone_from(d);
+    }
+    if let Some(ref p) = opts.platform {
+        sync.platform.clone_from(p);
+    }
+    if let Some(ins) = opts.insecure {
+        sync.insecure = ins;
+    }
+
+    let is_dry_run = matches!(opts.mode, MirrorExecutionMode::DryRun);
+    let plans = plan_transparent_mirrors(&registry, &vars, &opts.images, !is_dry_run).await?;
+    for p in &plans {
+        if let Some(ref err) = p.error {
+            return Err(format!("invalid mirror image '{}': {err}", p.raw_input));
+        }
+    }
+
+    let MirrorExecutionMode::Execute {
+        force,
+        save_tar,
+        append_extra_images,
+    } = opts.mode
+    else {
+        for p in &plans {
+            crate::log_println!(
+                "[dry-run] {} -> {} (rule: {})",
+                p.normalized_source,
+                p.target_ref,
+                p.matched_rule
+            );
+        }
+        return Ok(MirrorImportOutcome {
+            plans,
+            imported: Vec::new(),
+            skipped: Vec::new(),
+        });
+    };
+
+    let target_projects: Vec<String> = plans.iter().map(|p| p.target_project.clone()).collect();
+    ensure_harbor_mirror_projects(&registry, &target_projects, false).await?;
+
+    let platform = pull::platform_tuple(&sync.platform)?;
+    let pull_client = build_http_client(
+        sync.insecure,
+        sync.http_timeout_secs,
+        registry.ca_cert_file.as_deref(),
+    )?;
+
+    let mirror_tar_dir = save_tar.then(|| Path::new(&sync.output_dir).join("mirror"));
+    if let Some(ref dir) = mirror_tar_dir {
+        std::fs::create_dir_all(dir).map_err(|e| {
+            format!(
+                "failed to create mirror tar directory {}: {e}",
+                dir.display()
+            )
+        })?;
+    }
+
+    let mut imported = Vec::new();
+    let mut skipped = Vec::new();
+    let mut succeeded_plans = Vec::new();
+
+    for plan in &plans {
+        if !force && plan.already_exists == Some(true) {
+            crate::log_println!(
+                "Skip existing transparent mirror image {} (already present on registry)",
+                plan.target_ref
+            );
+            skipped.push(plan.target_ref.clone());
+            succeeded_plans.push(plan.clone());
+            continue;
+        }
+        import_single_mirror_plan(
+            &pull_client,
+            plan,
+            &sync,
+            &registry,
+            &platform,
+            mirror_tar_dir.as_deref(),
+        )
+        .await?;
+        imported.push(plan.target_ref.clone());
+        succeeded_plans.push(plan.clone());
+    }
+
+    if append_extra_images {
+        append_extra_images_to_inventory(&opts.inventory_path, &succeeded_plans)?;
+    }
+
+    Ok(MirrorImportOutcome {
+        plans,
+        imported,
+        skipped,
+    })
 }
 
 async fn pull_all_images(

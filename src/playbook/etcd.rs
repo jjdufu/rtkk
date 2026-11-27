@@ -186,6 +186,15 @@ pub fn inject_runtime_vars<S1, S2>(
                 default_mirrors.clone(),
             );
         }
+        if matches!(
+            h_vars.get("public_registry_default_mirror_project"),
+            None | Some(Value::Null)
+        ) {
+            h_vars.insert(
+                "public_registry_default_mirror_project".to_string(),
+                Value::String(crate::registry::DEFAULT_FALLBACK_MIRROR_PROJECT.to_string()),
+            );
+        }
         let hours_str = match h_vars.get("cert_validity") {
             None | Some(Value::Null) => default_hours_str.clone(),
             Some(Value::String(s)) if s.trim().is_empty() => default_hours_str.clone(),

@@ -1,7 +1,9 @@
 //! Built-in playbook task module `ensure_harbor_projects` for idempotent `Harbor` mirror project setup.
 
 use super::{Task, TaskModuleError, TaskResult, render_value};
-use crate::registry::{RegistryConfig, ensure_harbor_mirror_projects};
+use crate::registry::{
+    DEFAULT_FALLBACK_MIRROR_PROJECT, RegistryConfig, ensure_harbor_mirror_projects,
+};
 use serde_json::Value;
 
 fn parse_strict_flag(val: Option<&Value>) -> bool {
@@ -31,6 +33,34 @@ fn collect_projects_from_mirrors(mirrors_val: &Value) -> Result<Vec<String>, Tas
         }
     }
     Ok(projects)
+}
+
+fn resolve_default_fallback_project(rendered: &Value, host_vars: &Value) -> Option<String> {
+    if let Some(explicit) = rendered.get("default_project") {
+        return explicit
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+    }
+    let var_name = rendered
+        .get("default_project_var")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("public_registry_default_mirror_project");
+    match host_vars.get(var_name) {
+        Some(Value::String(s)) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        None | Some(Value::Null) => Some(DEFAULT_FALLBACK_MIRROR_PROJECT.to_string()),
+        _ => None,
+    }
 }
 
 pub(crate) async fn execute_ensure_harbor_projects(
@@ -63,7 +93,7 @@ pub(crate) async fn execute_ensure_harbor_projects(
         ))
     })?;
 
-    let projects = if let Some(explicit) = rendered.get("projects") {
+    let mut projects = if let Some(explicit) = rendered.get("projects") {
         collect_projects_from_mirrors(explicit)?
     } else {
         let mirrors_var_name = rendered
@@ -77,6 +107,12 @@ pub(crate) async fn execute_ensure_harbor_projects(
             _ => Vec::new(),
         }
     };
+
+    if rendered.get("projects").is_none()
+        && let Some(default_proj) = resolve_default_fallback_project(&rendered, host_vars)
+    {
+        projects.push(default_proj);
+    }
 
     let strict = parse_strict_flag(rendered.get("strict"));
     let outcome = ensure_harbor_mirror_projects(&registry, &projects, strict)

@@ -167,11 +167,12 @@ fn split_host_and_repo(name: &str) -> (String, String) {
     if has_host {
         let host = first.to_string();
         let rest = parts.get(1).copied().unwrap_or("").to_string();
-        let repository = if host == "docker.io" || host == "registry-1.docker.io" {
-            normalize_docker_hub_repo(&rest)
-        } else {
-            rest
-        };
+        let repository =
+            if host == "docker.io" || host == "registry-1.docker.io" || host == "index.docker.io" {
+                normalize_docker_hub_repo(&rest)
+            } else {
+                rest
+            };
         (normalize_host_name(&host), repository)
     } else {
         let repository = normalize_docker_hub_repo(name);
@@ -180,7 +181,7 @@ fn split_host_and_repo(name: &str) -> (String, String) {
 }
 
 fn normalize_host_name(host: &str) -> String {
-    if host == "registry-1.docker.io" {
+    if host == "registry-1.docker.io" || host == "index.docker.io" {
         "docker.io".to_string()
     } else {
         host.to_string()
@@ -454,12 +455,13 @@ pub(super) async fn pull_image(
     platform: &(String, String, Option<String>),
 ) -> Result<PulledImage, String> {
     let image_ref = parse_image_ref(&spec.source)?;
-    let base_url = resolve_registry_base_url(client, image_ref.api_host(), registry).await?;
+    let (base_url, pull_repo) =
+        resolve_source_mirror_endpoint(client, &image_ref, sync, registry).await?;
     let creds = resolve_source_creds(&image_ref.host, sync, registry);
     let worker = Arc::new(PullWorker {
         client: client.clone(),
         base_url,
-        repository: image_ref.repository.clone(),
+        repository: pull_repo,
         creds,
         authorization: RwLock::new(None),
         retries: sync.retries,
@@ -756,4 +758,58 @@ fn short_digest(digest: &str) -> String {
 
 pub(super) fn platform_tuple(platform: &str) -> Result<(String, String, Option<String>), String> {
     parse_platform(platform)
+}
+
+async fn resolve_source_mirror_endpoint(
+    client: &reqwest::Client,
+    image_ref: &ImageRef,
+    sync: &ImageSyncConfig,
+    registry: &RegistryConfig,
+) -> Result<(String, String), String> {
+    let raw_mirror = sync
+        .source_mirrors
+        .get(&image_ref.host)
+        .or_else(|| sync.source_mirrors.get(image_ref.api_host()))
+        .or_else(|| sync.source_mirrors.get("default"))
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+
+    let Some(mirror_val) = raw_mirror else {
+        let base = resolve_registry_base_url(client, image_ref.api_host(), registry).await?;
+        return Ok((base, image_ref.repository.clone()));
+    };
+
+    let (explicit_scheme, rest) = if let Some(r) = mirror_val.strip_prefix("https://") {
+        (Some("https"), r.trim_end_matches('/'))
+    } else if let Some(r) = mirror_val.strip_prefix("http://") {
+        (Some("http"), r.trim_end_matches('/'))
+    } else {
+        (None, mirror_val.trim_end_matches('/'))
+    };
+
+    let (host_part, path_prefix) = match rest.split_once('/') {
+        Some((h, p)) => (h, p.trim_matches('/')),
+        None => (rest, ""),
+    };
+    if host_part.is_empty() {
+        return Err(format!("invalid source_mirrors entry '{mirror_val}'"));
+    }
+
+    let base_url = match explicit_scheme {
+        Some(scheme) => format!("{scheme}://{host_part}"),
+        None => resolve_registry_base_url(client, host_part, registry).await?,
+    };
+
+    let stripped_v2 = path_prefix
+        .strip_prefix("v2/")
+        .or_else(|| (path_prefix == "v2").then_some(""))
+        .unwrap_or(path_prefix)
+        .trim_matches('/');
+
+    let repo = if stripped_v2.is_empty() {
+        image_ref.repository.clone()
+    } else {
+        format!("{stripped_v2}/{}", image_ref.repository)
+    };
+    Ok((base_url, repo))
 }

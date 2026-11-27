@@ -33,6 +33,10 @@ pub struct ImageSyncConfig {
     /// Optional per-host credentials for authenticated source registries.
     #[serde(default)]
     pub source_auths: HashMap<String, SourceAuth>,
+    /// Optional per-host upstream mirror overrides used during `pull-images` / `mirror-image`
+    /// (e.g. `docker.io: "mirror.example.com"` or `"https://mirror.example.com/v2/dockerhub"`).
+    #[serde(default)]
+    pub source_mirrors: HashMap<String, String>,
 }
 
 impl Default for ImageSyncConfig {
@@ -45,6 +49,7 @@ impl Default for ImageSyncConfig {
             layer_concurrency: default_layer_concurrency(),
             http_timeout_secs: default_http_timeout_secs(),
             source_auths: HashMap::new(),
+            source_mirrors: HashMap::new(),
         }
     }
 }

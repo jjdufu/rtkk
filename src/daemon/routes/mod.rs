@@ -4,6 +4,8 @@
 pub mod artifacts;
 /// Authentication and session inspection endpoints (Step 02).
 pub mod auth;
+/// `Harbor` v2 project/repository/artifact management and transparent mirror import endpoints.
+pub mod harbor;
 /// Health probe and workspace overview endpoints (Step 02).
 pub mod health;
 /// Inventory read/write, validation, and SSH/`become` probe endpoints (Step 04).
@@ -19,9 +21,9 @@ pub mod templates;
 
 use crate::daemon::state::DaemonState;
 use axum::Router;
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 
-/// Builds the `/api/v1/*` [`Router`] containing all 27 mounted Daemon endpoints.
+/// Builds the `/api/v1/*` [`Router`] containing all 34 mounted Daemon endpoints.
 pub fn build_api_router() -> Router<DaemonState> {
     Router::new()
         .route("/api/v1/health", get(health::get_health))
@@ -58,6 +60,25 @@ pub fn build_api_router() -> Router<DaemonState> {
         .route("/api/v1/registry/ping", post(artifacts::post_registry_ping))
         .route("/api/v1/registry/pull", post(artifacts::post_registry_pull))
         .route("/api/v1/registry/push", post(artifacts::post_registry_push))
+        .route("/api/v1/harbor/projects", get(harbor::list_projects))
+        .route("/api/v1/harbor/projects/sync", post(harbor::sync_projects))
+        .route(
+            "/api/v1/harbor/projects/{project}/repositories",
+            get(harbor::list_repositories),
+        )
+        .route(
+            "/api/v1/harbor/projects/{project}/artifacts",
+            get(harbor::list_artifacts),
+        )
+        .route(
+            "/api/v1/harbor/projects/{project}/artifacts",
+            delete(harbor::delete_artifact),
+        )
+        .route("/api/v1/harbor/mirror/plan", post(harbor::post_mirror_plan))
+        .route(
+            "/api/v1/harbor/mirror/import",
+            post(harbor::post_mirror_import),
+        )
         .route(
             "/api/v1/operations/prep-hosts",
             post(operations::post_prep_hosts),

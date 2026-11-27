@@ -1,9 +1,14 @@
-//! Public registry transparent mirror project definitions and `Harbor` project bootstrapper.
+//! Public registry transparent mirror project definitions, target resolver, and `Harbor` project bootstrapper.
 
 use super::RegistryConfig;
 use super::build_http_client;
 use super::client::{normalize_registry_host_prefix, probe_registry_base_url};
+use super::pull::parse_image_ref;
+use serde_json::Value;
 use std::collections::HashSet;
+
+/// Default `Harbor` project name used by `/etc/containerd/certs.d/_default/hosts.toml`.
+pub const DEFAULT_FALLBACK_MIRROR_PROJECT: &str = "external";
 
 /// Mapping from an upstream public registry hostname to a target private registry project name.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -27,6 +32,39 @@ pub struct HarborMirrorSyncOutcome {
     pub warnings: Vec<String>,
 }
 
+/// Resolved mapping from a raw upstream image reference to its transparent `Harbor` target path.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TransparentMirrorTarget {
+    /// Original user-provided image string (trimmed).
+    pub raw_input: String,
+    /// Canonicalized upstream image reference (including `docker.io/library/` normalization).
+    pub normalized_source: String,
+    /// Normalized upstream registry host (e.g. `"docker.io"`).
+    pub source_host: String,
+    /// Normalized upstream repository path (e.g. `"library/nginx"`).
+    pub source_repository: String,
+    /// Effective tag to push to `Harbor` (defaults to `"latest"` when omitted).
+    pub tag: String,
+    /// Optional pinned `@sha256:...` digest from the input reference.
+    pub digest: Option<String>,
+    /// Target `Harbor` project name (e.g. `"dockerhub"` or `"external"`).
+    pub target_project: String,
+    /// Target repository path inside `Harbor` (`"<target_project>/<source_repository>"`).
+    pub target_repository: String,
+    /// Full target image reference (`"<registry_host>/<target_project>/<source_repository>:<tag>"`).
+    pub target_ref: String,
+    /// Human-readable description of the mirror rule that matched.
+    pub matched_rule: String,
+    /// Whether the target fell back to the `_default` catch-all project.
+    pub used_default_fallback: bool,
+    /// Whether the target project already exists on `Harbor` (populated during remote planning).
+    pub project_exists: Option<bool>,
+    /// Whether the target image tag already exists on `Harbor` (populated during remote planning).
+    pub already_exists: Option<bool>,
+    /// Optional per-item validation or probe error message.
+    pub error: Option<String>,
+}
+
 const DEFAULT_MIRROR_PAIRS: &[(&str, &str)] = &[
     ("docker.io", "dockerhub"),
     ("registry-1.docker.io", "dockerhub"),
@@ -35,14 +73,24 @@ const DEFAULT_MIRROR_PAIRS: &[(&str, &str)] = &[
     ("quay.io", "quay"),
     ("gcr.io", "gcr"),
     ("k8s.gcr.io", "gcr"),
+    ("mirror.gcr.io", "gcr"),
     ("ghcr.io", "ghcr"),
     ("mcr.microsoft.com", "mcr"),
     ("public.ecr.aws", "ecr-public"),
     ("nvcr.io", "nvcr"),
     ("registry.gitlab.com", "gitlab"),
+    ("code.forgejo.org", "forgejo"),
+    ("higress-registry.cn-hangzhou.cr.aliyuncs.com", "higress"),
+    ("registry.cn-hangzhou.cr.aliyuncs.com", "aliyun-hz"),
+    ("lscr.io", "lscr"),
+    ("docker.elastic.co", "elastic"),
+    ("icr.io", "icr"),
+    ("registry.redhat.io", "redhat"),
+    ("registry.access.redhat.com", "redhat"),
+    ("cgr.dev", "chainguard"),
 ];
 
-/// Returns the default 12-entry upstream-to-project mirror mapping table.
+/// Returns the default 22-entry upstream-to-project mirror mapping table covering 17 `Harbor` projects.
 #[must_use]
 pub fn default_public_registry_mirrors() -> Vec<PublicRegistryMirror> {
     DEFAULT_MIRROR_PAIRS
@@ -54,6 +102,208 @@ pub fn default_public_registry_mirrors() -> Vec<PublicRegistryMirror> {
         .collect()
 }
 
+/// Extracts `public_registry_mirrors` and `public_registry_default_mirror_project` from inventory `vars`.
+///
+/// When `public_registry_mirrors` is omitted or null, falls back to [`default_public_registry_mirrors`].
+/// When `public_registry_default_mirror_project` is omitted or null, defaults to [`DEFAULT_FALLBACK_MIRROR_PROJECT`].
+/// Explicitly setting it to an empty string disables `_default` fallback.
+#[must_use]
+pub fn parse_mirror_settings_from_vars(
+    vars: &Value,
+) -> (Vec<PublicRegistryMirror>, Option<String>) {
+    let mirrors = match vars.get("public_registry_mirrors") {
+        Some(Value::Array(arr)) => {
+            let mut out = Vec::with_capacity(arr.len());
+            for item in arr {
+                if let (Some(h), Some(p)) = (
+                    item.get("host").and_then(Value::as_str).map(str::trim),
+                    item.get("project").and_then(Value::as_str).map(str::trim),
+                ) && !h.is_empty()
+                    && !p.is_empty()
+                {
+                    out.push(PublicRegistryMirror {
+                        host: h.to_string(),
+                        project: p.to_string(),
+                    });
+                }
+            }
+            out
+        }
+        _ => default_public_registry_mirrors(),
+    };
+
+    let default_project = match vars.get("public_registry_default_mirror_project") {
+        Some(Value::String(s)) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        None | Some(Value::Null) => Some(DEFAULT_FALLBACK_MIRROR_PROJECT.to_string()),
+        _ => None,
+    };
+
+    (mirrors, default_project)
+}
+
+/// Collects deduplicated `Harbor` project names from explicit mirrors plus optional `_default` fallback project.
+#[must_use]
+pub fn collect_mirror_project_names(
+    mirrors: &[PublicRegistryMirror],
+    default_project: Option<&str>,
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for m in mirrors {
+        let p = m.project.trim();
+        if !p.is_empty() && seen.insert(p.to_string()) {
+            out.push(p.to_string());
+        }
+    }
+    if let Some(dp) = default_project.map(str::trim).filter(|s| !s.is_empty())
+        && seen.insert(dp.to_string())
+    {
+        out.push(dp.to_string());
+    }
+    out
+}
+
+/// Parses one or more raw image references from newline/comma-separated text or `YAML` `image:` lines.
+#[must_use]
+pub fn extract_image_refs_from_text(raw: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for line in raw.lines() {
+        let stripped_comment = line.split('#').next().unwrap_or("").trim();
+        if stripped_comment.is_empty() {
+            continue;
+        }
+        let cleaned = stripped_comment
+            .strip_prefix('-')
+            .map_or(stripped_comment, str::trim);
+        let candidate = if let Some(rest) = cleaned.strip_prefix("image:") {
+            rest.trim()
+        } else {
+            cleaned
+        };
+        for token in candidate.split(',') {
+            let unquoted = token.trim().trim_matches('"').trim_matches('\'').trim();
+            if !unquoted.is_empty() && seen.insert(unquoted.to_string()) {
+                out.push(unquoted.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Validates a `Harbor` project name (`[a-z0-9][a-z0-9._-]*`).
+///
+/// # Errors
+///
+/// Returns an error if `name` is empty or contains disallowed characters.
+pub fn validate_harbor_project_name(name: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Harbor project name cannot be empty".to_string());
+    }
+    let valid = trimmed
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+        && trimmed
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    if !valid {
+        return Err(format!(
+            "invalid Harbor mirror project name '{trimmed}' (allowed: lowercase [a-z0-9._-], starting with [a-z0-9])"
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Resolves an upstream image reference into its transparent private registry target path.
+///
+/// # Errors
+///
+/// Returns an error if `raw_image` cannot be parsed, `registry_url` has no host, `raw_image` already
+/// targets the private registry host, or neither an explicit mirror nor `default_project` matches.
+pub fn resolve_transparent_target(
+    raw_image: &str,
+    registry_url: &str,
+    mirrors: &[PublicRegistryMirror],
+    default_project: Option<&str>,
+) -> Result<TransparentMirrorTarget, String> {
+    let raw_trimmed = raw_image.trim();
+    let parsed = parse_image_ref(raw_trimmed)?;
+    let normalized_reg = normalize_registry_host_prefix(registry_url);
+    let reg_domain = normalized_reg
+        .split('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "registry.url host is empty".to_string())?;
+
+    if parsed.host.eq_ignore_ascii_case(reg_domain) {
+        return Err(format!(
+            "image '{raw_trimmed}' already points to private registry host '{reg_domain}'"
+        ));
+    }
+
+    let (target_project, matched_rule, used_default_fallback) = if let Some(m) = mirrors
+        .iter()
+        .find(|m| m.host.eq_ignore_ascii_case(&parsed.host))
+    {
+        let proj = validate_harbor_project_name(&m.project)?;
+        (proj.clone(), format!("{} -> {proj}", m.host), false)
+    } else if let Some(dp) = default_project.map(str::trim).filter(|s| !s.is_empty()) {
+        let proj = validate_harbor_project_name(dp)?;
+        (proj.clone(), format!("_default -> {proj}"), true)
+    } else {
+        return Err(format!(
+            "no mirror rule matches host '{}' and no _default fallback project is configured",
+            parsed.host
+        ));
+    };
+
+    let tag = if let Some(ref t) = parsed.tag {
+        t.clone()
+    } else if let Some(ref d) = parsed.digest {
+        let hex = d.strip_prefix("sha256:").unwrap_or(d);
+        let short = hex.get(..12.min(hex.len())).unwrap_or(hex);
+        format!("sha256-{short}")
+    } else {
+        "latest".to_string()
+    };
+
+    let normalized_source = match (&parsed.tag, &parsed.digest) {
+        (Some(t), Some(d)) => format!("{}/{}:{t}@{d}", parsed.host, parsed.repository),
+        (Some(t), None) => format!("{}/{}:{t}", parsed.host, parsed.repository),
+        (None, Some(d)) => format!("{}/{}@{d}", parsed.host, parsed.repository),
+        (None, None) => format!("{}/{}:latest", parsed.host, parsed.repository),
+    };
+
+    let target_repository = format!("{target_project}/{}", parsed.repository);
+    let target_ref = format!("{reg_domain}/{target_repository}:{tag}");
+
+    Ok(TransparentMirrorTarget {
+        raw_input: raw_trimmed.to_string(),
+        normalized_source,
+        source_host: parsed.host,
+        source_repository: parsed.repository,
+        tag,
+        digest: parsed.digest,
+        target_project,
+        target_repository,
+        target_ref,
+        matched_rule,
+        used_default_fallback,
+        project_exists: None,
+        already_exists: None,
+        error: None,
+    })
+}
+
 fn validate_and_dedup_projects(raw_projects: &[String]) -> Result<Vec<String>, String> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
@@ -62,20 +312,9 @@ fn validate_and_dedup_projects(raw_projects: &[String]) -> Result<Vec<String>, S
         if name.is_empty() {
             continue;
         }
-        let valid = name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
-            && name
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
-        if !valid {
-            return Err(format!(
-                "invalid Harbor mirror project name '{name}' (allowed: lowercase [a-z0-9._-], starting with [a-z0-9])"
-            ));
-        }
-        if seen.insert(name.to_string()) {
-            out.push(name.to_string());
+        let valid_name = validate_harbor_project_name(name)?;
+        if seen.insert(valid_name.clone()) {
+            out.push(valid_name);
         }
     }
     Ok(out)

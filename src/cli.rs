@@ -199,6 +199,45 @@ pub enum Commands {
         #[arg(long, help = "Accept invalid TLS certificates for pull")]
         insecure: bool,
     },
+    /// Pull upstream images and import them into transparent `Harbor` mirror paths.
+    #[command(about = "Pull upstream images and import into Harbor transparent mirror projects")]
+    MirrorImage {
+        /// One or more upstream image references (e.g. `nginx:1.27`, `bitnami/redis:7.4`).
+        #[arg(required = true, help = "Upstream image references to mirror")]
+        images: Vec<String>,
+        /// Path to the inventory YAML file.
+        #[arg(
+            long,
+            short = 'i',
+            required = true,
+            help = "Path to the inventory file"
+        )]
+        inventory: String,
+        /// Target platform in `os/arch` format.
+        #[arg(
+            long,
+            help = "Platform os/arch (default: vars.image_sync.platform or linux/amd64)"
+        )]
+        platform: Option<String>,
+        /// Persist downloaded `.tar` archives under `<output-dir>/mirror/`.
+        #[arg(long, help = "Persist downloaded tarballs under <output-dir>/mirror/")]
+        save_tar: bool,
+        /// Archive directory override when `--save-tar` is enabled.
+        #[arg(long, help = "Tar output directory when --save-tar is set")]
+        output_dir: Option<String>,
+        /// Accept self-signed or invalid `TLS` certificates when pulling from upstream sources.
+        #[arg(long, help = "Accept invalid TLS certificates for upstream pull")]
+        insecure: bool,
+        /// Re-pull and overwrite even if the target tag already exists in `Harbor`.
+        #[arg(long, help = "Overwrite existing tags in Harbor")]
+        force: bool,
+        /// Append imported images to `vars.extra_images` in the inventory file.
+        #[arg(long, help = "Append imported entries to vars.extra_images")]
+        append_extra_images: bool,
+        /// Preview transparent target paths without pulling or pushing.
+        #[arg(long, help = "Preview mapped Harbor targets without pulling/pushing")]
+        dry_run: bool,
+    },
     /// Start the long-running HTTP/SSE Daemon and embedded Park UI console (`127.0.0.1:19912`).
     #[command(about = "Start rtkk HTTP/SSE daemon and embedded WebUI console")]
     Serve {
@@ -810,50 +849,25 @@ async fn dispatch_serve(
     .await
 }
 
-/// Execute a parsed [`Commands`] variant.
-///
-/// # Errors
-///
-/// Returns [`RtkkError`] if inventory loading, playbook execution, certificate generation,
-/// node preparation, or registry synchronization fails.
-pub async fn dispatch_command(command: Commands) -> Result<(), RtkkError> {
+async fn dispatch_mirror_image(
+    opts: crate::registry::MirrorImportOptions,
+) -> Result<(), RtkkError> {
+    let is_dry_run = matches!(opts.mode, crate::registry::MirrorExecutionMode::DryRun);
+    let outcome = crate::registry::execute_mirror_images(&opts)
+        .await
+        .map_err(RtkkError::Registry)?;
+    if !is_dry_run {
+        crate::log_println!(
+            "Mirror import complete (imported={}, skipped={}).",
+            outcome.imported.len(),
+            outcome.skipped.len()
+        );
+    }
+    Ok(())
+}
+
+async fn dispatch_registry_command(command: Commands) -> Result<(), RtkkError> {
     match command {
-        Commands::Run {
-            playbook_path,
-            inventory,
-            set,
-            forks,
-            tags,
-            task_timeout,
-        } => {
-            execute_run(
-                &playbook_path,
-                &inventory,
-                &set,
-                forks,
-                tags.as_deref(),
-                task_timeout,
-            )
-            .await
-        }
-        Commands::Prep {
-            sub:
-                PrepSubcommands::Hosts {
-                    inventory,
-                    best_effort,
-                },
-        } => {
-            let loaded = load_inventory(&inventory).await?;
-            crate::prep::execute_prep_hosts(
-                &inventory,
-                &loaded.flat,
-                &loaded.target_configs,
-                best_effort,
-            )
-            .await
-            .map_err(RtkkError::Prep)
-        }
-        Commands::Cert { sub } => dispatch_cert(sub).await,
         Commands::PushImages {
             tar_path,
             inventory,
@@ -901,6 +915,90 @@ pub async fn dispatch_command(command: Commands) -> Result<(), RtkkError> {
                 .await
                 .map_err(RtkkError::Registry)
         }
+        Commands::MirrorImage {
+            images,
+            inventory,
+            platform,
+            save_tar,
+            output_dir,
+            insecure,
+            force,
+            append_extra_images,
+            dry_run,
+        } => {
+            let mode = if dry_run {
+                crate::registry::MirrorExecutionMode::DryRun
+            } else {
+                crate::registry::MirrorExecutionMode::Execute {
+                    force,
+                    save_tar,
+                    append_extra_images,
+                }
+            };
+            dispatch_mirror_image(crate::registry::MirrorImportOptions {
+                inventory_path: inventory,
+                images,
+                platform,
+                output_dir,
+                insecure: if insecure { Some(true) } else { None },
+                mode,
+            })
+            .await
+        }
+        _ => Err(RtkkError::Registry(
+            "unexpected non-registry command dispatched".to_string(),
+        )),
+    }
+}
+
+/// Execute a parsed [`Commands`] variant.
+///
+/// # Errors
+///
+/// Returns [`RtkkError`] if inventory loading, playbook execution, certificate generation,
+/// node preparation, or registry synchronization fails.
+pub async fn dispatch_command(command: Commands) -> Result<(), RtkkError> {
+    match command {
+        Commands::Run {
+            playbook_path,
+            inventory,
+            set,
+            forks,
+            tags,
+            task_timeout,
+        } => {
+            execute_run(
+                &playbook_path,
+                &inventory,
+                &set,
+                forks,
+                tags.as_deref(),
+                task_timeout,
+            )
+            .await
+        }
+        Commands::Prep {
+            sub:
+                PrepSubcommands::Hosts {
+                    inventory,
+                    best_effort,
+                },
+        } => {
+            let loaded = load_inventory(&inventory).await?;
+            crate::prep::execute_prep_hosts(
+                &inventory,
+                &loaded.flat,
+                &loaded.target_configs,
+                best_effort,
+            )
+            .await
+            .map_err(RtkkError::Prep)
+        }
+        Commands::Cert { sub } => dispatch_cert(sub).await,
+        cmd @ (Commands::PushImages { .. }
+        | Commands::PullImages { .. }
+        | Commands::SyncImages { .. }
+        | Commands::MirrorImage { .. }) => dispatch_registry_command(cmd).await,
         Commands::Serve {
             listen,
             work_dir,
