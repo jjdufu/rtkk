@@ -314,20 +314,23 @@ vars:
 
 ## 5. 离线第三方 Helm Chart 透明镜像映射（`override_path = true`）
 
-在内网离线部署 Redis、Prometheus、Ingress-Nginx、Cert-Manager 等第三方 Helm Chart 时，启用 `enable_public_registry_mirrors: true` 可通过 `containerd certs.d` 的 `override_path = true` 将主流公网源透明映射至内网 Harbor 固定源站项目，无需修改任何 Chart 的 `image.registry` / `image.repository`，也无需配置内网 DNS 劫持：
+在内网离线部署 Nginx、Redis、Prometheus、Ingress-Nginx、Cert-Manager 等第三方 Helm Chart 时，默认启用的 `enable_public_registry_mirrors: true` 通过 `containerd certs.d` 的 `override_path = true` 将主流公网源及任意未知外部源透明映射至内网 Harbor 固定源站项目，无需修改 Chart 的 `image.registry` / `image.repository`，也无需配置内网 DNS 劫持：
 
 1. **兼容 1 段 / 2 段 / 3+ 段任意路径深度**：`override_path = true` 统一前置 `/v2/<project>`，单段镜像（如 `registry.k8s.io/pause:3.10`）与多级路径镜像（如 `mcr.microsoft.com/oss/kubernetes/pause:3.10`）均满足 Harbor `<project>/<repo>` 要求。
-2. **源站级项目收口与零冲突隔离**：全库固定 9 个源站项目（`dockerhub`、`k8s`、`quay`、`gcr`、`ghcr`、`mcr`、`ecr-public`、`nvcr`、`gitlab`），彻底避免为数十个上游组织建项及跨源同名冲突（如 `docker.io/cilium/*` 与 `quay.io/cilium/*`）。
-3. **自动建项与凭据/CA 联动**：当 `auto_create_mirror_projects: true` 时，`configs/deploy.yaml` 通过内置 `ensure_harbor_projects` 模块幂等调用 Harbor `POST /api/v2.0/projects`（`201` 新建、`409` 幂等跳过；非 Harbor `404` 或无建项权限 `401`/`403` 输出告警不中断部署），节点侧 `hosts.toml`（强制 `0600`）自动继承 `registry.scheme`、`registry.ca_cert_file`、`registry.insecure` 与 `registry.auth_basic`。
+2. **源站级项目收口 + `_default` 全域兜底**：默认内置 22 个主流公网域名映射至 17 个固定源站项目（`dockerhub`、`k8s`、`quay`、`gcr`、`ghcr`、`mcr`、`ecr-public`、`nvcr`、`gitlab`、`forgejo`、`higress`、`aliyun-hz`、`lscr`、`elastic`、`icr`、`redhat`、`chainguard`），并配合 `public_registry_default_mirror_project: "external"` 生成 `/etc/containerd/certs.d/_default/hosts.toml`，将任何未列出的外部仓库地址全部接管至 `external` 项目。
+3. **默认禁止回退直连外网**：`public_registry_mirrors_fallback` 默认为 `false`，生成的 `hosts.toml` 省略 `server = "https://<host>"` 字段；当 Harbor 尚未导入目标镜像或不可达时，`containerd` 直接返回私库错误，绝不回退请求公网域名或代理网关。
+4. **自动建项、凭据/CA 联动与 WebUI 一键预拉取**：当 `auto_create_mirror_projects: true` 时，`configs/deploy.yaml` 通过内置 `ensure_harbor_projects` 模块幂等创建所有显式源站项目及兜底项目，节点侧 `hosts.toml`（强制 `0600`）自动继承 `registry.scheme`、`registry.ca_cert_file`、`registry.insecure` 与 `registry.auth_basic`。日常需要导入业务镜像（如 `nginx:1.27`）时，可在 WebUI `/harbor`（`私库管理`）或通过 `rtkk mirror-image` 一键拉取并推送至对应 Harbor 透明目录。
 
-### 5.1 开启透明映射配置
+### 5.1 透明映射配置示例
 
-在 `configs/inventory.yaml`（或 WebUI `/inventory` -> `镜像仓库与同步` 页签开启「公网源透明映射」）设置：
+在 `configs/inventory.yaml`（或 WebUI `/inventory` -> `镜像私库` 页签）配置：
 
 ```yaml
 vars:
   enable_public_registry_mirrors: true
   auto_create_mirror_projects: true
+  public_registry_mirrors_fallback: false
+  public_registry_default_mirror_project: "external"
   public_registry_mirrors:
     - host: "docker.io"
       project: "dockerhub"
@@ -343,6 +346,8 @@ vars:
       project: "gcr"
     - host: "k8s.gcr.io"
       project: "gcr"
+    - host: "mirror.gcr.io"
+      project: "gcr"
     - host: "ghcr.io"
       project: "ghcr"
     - host: "mcr.microsoft.com"
@@ -353,11 +358,37 @@ vars:
       project: "nvcr"
     - host: "registry.gitlab.com"
       project: "gitlab"
+    - host: "code.forgejo.org"
+      project: "forgejo"
+    - host: "higress-registry.cn-hangzhou.cr.aliyuncs.com"
+      project: "higress"
+    - host: "registry.cn-hangzhou.aliyuncs.com"
+      project: "aliyun-hz"
+    - host: "lscr.io"
+      project: "lscr"
+    - host: "docker.elastic.co"
+      project: "elastic"
+    - host: "icr.io"
+      project: "icr"
+    - host: "registry.redhat.io"
+      project: "redhat"
+    - host: "registry.access.redhat.com"
+      project: "redhat"
+    - host: "cgr.dev"
+      project: "chainguard"
 ```
 
-### 5.2 离线业务镜像导入命名规则对照表
+### 5.2 离线业务镜像一键导入与命名规则对照表
 
-准备第三方 Chart 离线镜像时，按源站域名映射为 `<registry_host>/<project>/<original_path>:<tag>` 推送至 Harbor（注意 Docker Hub 官方单段镜像需保留 `library/` 前缀，因为 `containerd` 解析无命名空间镜像时会自动补全 `library/`）：
+通过 WebUI `/harbor`（`私库管理` -> `预拉取导入`）或 CLI `rtkk mirror-image` 输入原始镜像地址，RTKK 自动按透明映射规则解析目标 Harbor 路径（包含为 Docker Hub 单段镜像自动补齐 `library/`）：
+
+```bash
+# 预览映射结果（不执行拉取推送）
+rtkk mirror-image nginx:1.27 bitnami/redis:7.4 -i configs/inventory.yaml --dry-run
+
+# 一键拉取并导入对应 Harbor 透明目录
+rtkk mirror-image nginx:1.27 registry.k8s.io/ingress-nginx/controller:v1.12.1 -i configs/inventory.yaml
+```
 
 | Helm Chart 原始镜像引用 | 导入 Harbor 的目标地址（示例私库主机 `10.0.0.10`） |
 | :--- | :--- |
@@ -368,8 +399,9 @@ vars:
 | `quay.io/jetstack/cert-manager-controller:v1.17.1` | `10.0.0.10/quay/jetstack/cert-manager-controller:v1.17.1` |
 | `ghcr.io/prometheus-operator/prometheus-config-reloader:v0.81.0` | `10.0.0.10/ghcr/prometheus-operator/prometheus-config-reloader:v0.81.0` |
 | `mcr.microsoft.com/oss/kubernetes/pause:3.10`（三段路径） | `10.0.0.10/mcr/oss/kubernetes/pause:3.10` |
+| `custom.vendor.io/team/app:v2`（未列出外部源，走 `_default`） | `10.0.0.10/external/team/app:v2` |
 
-也可直接在 `configs/inventory.yaml` 的 `vars.extra_images` 中声明业务镜像列表，由 `rtkk sync-images` 一体化拉取并推送至对应源站项目：
+也可在 `configs/inventory.yaml` 的 `vars.extra_images` 中声明业务镜像列表，由 `rtkk sync-images` 一体化拉取并推送至对应源站项目：
 
 ```yaml
 vars:

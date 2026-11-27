@@ -4,7 +4,7 @@
 
 ---
 
-## 1. 已挂载路由表（Mounted Routes · 共 27 条 · `check_routes.py` 双向强校验）
+## 1. 已挂载路由表（Mounted Routes · 共 34 条 · `check_routes.py` 双向强校验）
 
 <!-- MOUNTED_ROUTES_START -->
 | 方法 | 路由路径 | 鉴权级别 | 互斥级别 | 处理模块 | 所属步骤 | 接口摘要 |
@@ -28,6 +28,13 @@
 | `POST` | `/api/v1/registry/ping` | `authenticated` | `readonly` | `routes/artifacts.rs` | Step 05 | 在线探测私库 HTTPS/HTTP 协议、Basic/Bearer 令牌交换与 Harbor 可达性 |
 | `POST` | `/api/v1/registry/pull` | `authenticated` | `mutating` | `routes/artifacts.rs` | Step 05 | 异步批量或按子集拉取上游 OCI 镜像至本地 `.tar`，返回 `{job_id}` |
 | `POST` | `/api/v1/registry/push` | `authenticated` | `mutating` | `routes/artifacts.rs` | Step 05 | 异步校验本地 `.tar`、自动建 Harbor 项目并推送私库，返回 `{job_id}` |
+| `GET` | `/api/v1/harbor/projects` | `authenticated` | `readonly` | `routes/harbor.rs` | Step 05 | 列出 Harbor 项目并与当前透明映射表及兜底项目执行对账 |
+| `POST` | `/api/v1/harbor/projects/sync` | `authenticated` | `mutating` | `routes/harbor.rs` | Step 05 | 幂等创建所有缺失的 Harbor 透明映射源站项目与兜底项目 |
+| `GET` | `/api/v1/harbor/projects/{project}/repositories` | `authenticated` | `readonly` | `routes/harbor.rs` | Step 05 | 查询指定 Harbor 项目下的仓库列表（支持关键词过滤） |
+| `GET` | `/api/v1/harbor/projects/{project}/artifacts` | `authenticated` | `readonly` | `routes/harbor.rs` | Step 05 | 查询指定 Harbor 项目与仓库下的 Artifact / Tag 元数据列表 |
+| `DELETE` | `/api/v1/harbor/projects/{project}/artifacts` | `authenticated` | `mutating` | `routes/harbor.rs` | Step 05 | 删除指定 Harbor 仓库下的目标 Artifact / Tag |
+| `POST` | `/api/v1/harbor/mirror/plan` | `authenticated` | `readonly` | `routes/harbor.rs` | Step 05 | 批量解析原始镜像地址，预览透明目标 Harbor 路径并检测是否已存在 |
+| `POST` | `/api/v1/harbor/mirror/import` | `authenticated` | `mutating` | `routes/harbor.rs` | Step 05 | 异步批量拉取上游镜像并导入 Harbor 透明映射目录，返回 `{job_id}` |
 | `POST` | `/api/v1/operations/prep-hosts` | `authenticated` | `mutating` | `routes/operations.rs` | Step 06 | 异步执行集群 `prep hosts` 主机名采集与 `/etc/hosts` 同步 |
 | `POST` | `/api/v1/operations/run` | `authenticated` | `dynamic` | `routes/operations.rs` | Step 06 | 异步执行内置 Playbook（仅 `tags: ["check"]` 为只读，其余加排他写锁） |
 | `GET` | `/api/v1/playbooks/{name}/outline` | `authenticated` | `readonly` | `routes/operations.rs` | Step 06 | 解析并返回 `deploy`/`cleanup`/`download` 的 Play、Task 与可选 Tags 树 |

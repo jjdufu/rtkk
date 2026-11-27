@@ -38,6 +38,7 @@
 | `rtkk pull-images -i <INVENTORY> --images-file <IMAGES> [--output-dir D] [--platform P] [--force] [--insecure]` | 已交付 | 纯 Rust 拉取 OCI 镜像至本地 `docker-legacy` `.tar`（含 `rtkk-media.json`） |
 | `rtkk push-images [<TAR>] -i <INVENTORY> [--images-file <IMAGES>] [--output-dir D] [--retag]` | 已交付 | 单包或批量推送本地镜像 `.tar` 至私有镜像仓库（互斥 XOR 模式，支持跨私库自动重标推送） |
 | `rtkk sync-images -i <INVENTORY> --images-file <IMAGES> [--output-dir D] [--platform P] [--force] [--insecure]` | 已交付 | 一体化拉取上游镜像并推送至目标私库 |
+| `rtkk mirror-image <IMAGE>... -i <INVENTORY> [--platform P] [--save-tar] [--output-dir D] [--insecure] [--dry-run]` | 已交付 | 按透明映射规则解析原始镜像并一键拉取导入目标 Harbor 源站项目 |
 | `rtkk serve [--listen 127.0.0.1:19912] [--work-dir .] [--token-file .rtkk-daemon/admin.token]` | Step 02 | 启动常驻 HTTP/SSE 管理服务与内嵌 Park UI 控制台 |
 | `rtkk healthcheck [--url http://127.0.0.1:19912/api/v1/health]` | Step 02 | 容器与自动化脚本探活子命令（健康返回 `0`，异常返回 `1`） |
 
@@ -53,6 +54,7 @@
 | `inventory` | `/inventory` | `集群配置` | 已登录 | Step 04 |
 | `templates` | `/templates` | `模板预览` | 已登录 | Step 04 |
 | `artifacts` | `/artifacts` | `离线资源` | 已登录 | Step 05 |
+| `harbor` | `/harbor` | `私库管理` | 已登录 | Step 05 |
 | `operations` | `/operations` | `编排执行` | 已登录 | Step 06 |
 | `pki` | `/pki` | `证书备份` | 已登录 | Step 06 |
 | `login` | `/login` | —（独立登录页） | 公开 | Step 03 |

@@ -11,7 +11,7 @@
 | `/api/v1/*` | 结构化 JSON API 或 `text/event-stream` SSE 端点；所有响应携带 `X-Request-Id: req_<hex>` 追踪头 |
 | `/api/*`（未匹配路由） | 强制返回 HTTP `404 Not Found` 结构化 JSON 错误体，**严禁**回退为 HTML 页面 |
 | `/assets/*`、`/favicon.svg` | 内嵌前端编译静态产物，协商 `Accept-Encoding: gzip` 并返回强校验 `ETag: "<sha256>"` 与 `Cache-Control: public, max-age=31536000, immutable`（命中 `If-None-Match` 返回 `304 Not Modified`） |
-| 其余非 `/api/*` 的 `GET` / `HEAD` 请求 | 回退返回内嵌 SPA 入口 `index.html`（`Cache-Control: no-cache`），支撑前端路由（`/inventory`、`/templates`、`/artifacts`、`/operations`、`/pki`、`/login`）直接刷新 |
+| 其余非 `/api/*` 的 `GET` / `HEAD` 请求 | 回退返回内嵌 SPA 入口 `index.html`（`Cache-Control: no-cache`），支撑前端路由（`/inventory`、`/templates`、`/artifacts`、`/harbor`、`/operations`、`/pki`、`/login`）直接刷新 |
 
 ---
 
@@ -87,8 +87,8 @@
 
 | 任务类别 | 代表操作 | 互斥策略 |
 | :--- | :--- | :--- |
-| **变更型任务（Mutating）** | `artifacts/download`、`registry/pull`、`registry/push`、`operations/prep-hosts`、`operations/run`（`deploy` 完整或 `preflight`、`cleanup`、`download`） | 全局单飞排他锁：同一 `Workspace` 任一时刻最多运行 **1** 个变更任务，冲突请求立即返回 `409 CONFLICT_ACTIVE_JOB` |
-| **只读型任务与即时诊断（Read-Only）** | `inventory/validate`、`inventory/probe`、`templates/render`、`registry/ping`、`operations/run`（仅 `--tags check`）、`pki/verify` | 无排他写锁，允许在变更任务运行期间并发查询或预检 |
+| **变更型任务（Mutating）** | `artifacts/download`、`registry/pull`、`registry/push`、`harbor/mirror/import`、`operations/prep-hosts`、`operations/run`（`deploy` 完整或 `preflight`、`cleanup`、`download`） | 全局单飞排他锁：同一 `Workspace` 任一时刻最多运行 **1** 个变更任务，冲突请求立即返回 `409 CONFLICT_ACTIVE_JOB` |
+| **只读型任务与即时诊断（Read-Only）** | `inventory/validate`、`inventory/probe`、`templates/render`、`registry/ping`、`harbor/projects`、`harbor/mirror/plan`、`operations/run`（仅 `--tags check`）、`pki/verify` | 无排他写锁，允许在变更任务运行期间并发查询或预检 |
 
 ### 5.2 JSONL 事件持久化与 SSE 流格式（`GET /api/v1/jobs/{id}/events`）
 
