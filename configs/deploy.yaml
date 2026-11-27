@@ -169,43 +169,66 @@
         src: "templates/containerd-config.toml.gtmpl"
         dest: "/etc/containerd/config.toml"
         mode: "0644"
+      tags: ["containerd", "registry"]
     - name: Ensure Harbor mirror projects exist for public registries
       ensure_harbor_projects:
         registry_var: "registry"
         mirrors_var: "public_registry_mirrors"
+        default_project_var: "public_registry_default_mirror_project"
         strict: "{{ default false .strict_mirror_projects }}"
       run_once: true
       delegate_to: localhost
-      when: '{{- if eq (printf "%v" (default false .enable_public_registry_mirrors)) "true" -}}{{ eq (printf "%v" (default true .auto_create_mirror_projects)) "true" }}{{- else -}}false{{- end -}}'
+      when: '{{- if eq (printf "%v" (default false .enable_public_registry_mirrors)) "true" -}}{{ and (ne .auto_create_mirror_projects false) (ne .auto_create_mirror_projects "false") }}{{- else -}}false{{- end -}}'
       tags: ["containerd", "registry"]
     - name: Create certs.d directories for public registries
       command: "mkdir -p /etc/containerd/certs.d/{{ .item }}"
       with_items: "{{ .public_registries }}"
       when: 'ne (printf "%v" (default false .enable_public_registry_mirrors)) "true"'
+      tags: ["containerd", "registry"]
     - name: Create certs.d directories for mirrored public registries
       command: "mkdir -p /etc/containerd/certs.d/{{ .item.host }}"
       with_items: "{{ .public_registry_mirrors }}"
       when: 'eq (printf "%v" (default false .enable_public_registry_mirrors)) "true"'
+      tags: ["containerd", "registry"]
+    - name: Create certs.d default fallback directory for unlisted registries
+      command: "mkdir -p /etc/containerd/certs.d/_default"
+      when: '{{- if eq (printf "%v" (default false .enable_public_registry_mirrors)) "true" -}}{{ not (empty (default "" .public_registry_default_mirror_project)) }}{{- else -}}false{{- end -}}'
+      tags: ["containerd", "registry"]
     - name: Create certs.d directory for private registry
       command: 'mkdir -p /etc/containerd/certs.d/{{ index (splitList "/" (trimPrefix "http://" (trimPrefix "https://" .registry.url))) 0 }}'
+      tags: ["containerd", "registry"]
     - name: Copy private registry custom CA certificate when configured
       copy:
         src: "{{ .registry.ca_cert_file }}"
         dest: '/etc/containerd/certs.d/{{ index (splitList "/" (trimPrefix "http://" (trimPrefix "https://" .registry.url))) 0 }}/ca.crt'
         mode: "0644"
       when: 'not (empty (default "" (index . "registry" "ca_cert_file")))'
+      tags: ["containerd", "registry"]
     - name: Write HTTPS hosts.toml for public registries
       copy:
         content: |
+          {{- $regHost := index (splitList "/" (trimPrefix "http://" (trimPrefix "https://" (default "" (index . "registry" "url"))))) 0 -}}
+          {{- $hasCa := and (not (empty $regHost)) (not (empty (default "" (index . "registry" "ca_cert_file")))) -}}
           {{- $insecure := ne (printf "%v" (default false .public_registries_insecure)) "false" -}}
           {{- $authEnabled := ne (printf "%v" (default false .public_registries_auth)) "false" -}}
           {{- $authBasic := default "" (index . "registry" "auth_basic") -}}
           {{- $useAuth := and $authEnabled (not (empty $authBasic)) -}}
-          {{- $rawMirror := default (default "" .public_registries_mirror) (index . "public_registries_mirrors" .item) -}}
+          {{- $mirrorDefault := default (default "" .public_registries_mirror) (index . "public_registries_mirrors" "default") -}}
+          {{- $rawMirror := default $mirrorDefault (index . "public_registries_mirrors" .item) -}}
           {{- $primary := ternary (ternary $rawMirror (printf "https://%s" $rawMirror) (regexMatch "^https?://" $rawMirror)) (printf "https://%s" .item) (not (empty $rawMirror)) -}}
+          {{- $overridePath := regexMatch "/v2(/|$)" $primary -}}
+          {{- $allowFallback := and (ne .public_registries_fallback false) (ne .public_registries_fallback "false") -}}
+          {{- if $allowFallback }}
           server = "https://{{ .item }}"
+          {{- end }}
           [host."{{ $primary }}"]
             capabilities = ["pull", "resolve"]
+          {{- if $overridePath }}
+            override_path = true
+          {{- end }}
+          {{- if and $hasCa (regexMatch "^https://" $primary) }}
+            ca = "/etc/containerd/certs.d/{{ $regHost }}/ca.crt"
+          {{- end }}
           {{- if $insecure }}
             skip_verify = true
           {{- end }}
@@ -217,6 +240,9 @@
           {{- $httpFallback := printf "http://%s" (trimPrefix "https://" $primary) }}
           [host."{{ $httpFallback }}"]
             capabilities = ["pull", "resolve"]
+          {{- if $overridePath }}
+            override_path = true
+          {{- end }}
             skip_verify = true
           {{- if $useAuth }}
             [host."{{ $httpFallback }}".header]
@@ -227,6 +253,7 @@
         mode: "0600"
       with_items: "{{ .public_registries }}"
       when: 'ne (printf "%v" (default false .enable_public_registry_mirrors)) "true"'
+      tags: ["containerd", "registry"]
     - name: Write override_path hosts.toml for mirrored public registries
       copy:
         content: |
@@ -237,7 +264,10 @@
           {{- $insecure := ne (printf "%v" (default false .registry.insecure)) "false" -}}
           {{- $skipVerify := ternary true false $insecure -}}
           {{- $authBasic := default "" (index . "registry" "auth_basic") -}}
+          {{- $allowFallback := eq (printf "%v" (default false .public_registry_mirrors_fallback)) "true" -}}
+          {{- if $allowFallback }}
           server = "https://{{ .item.host }}"
+          {{- end }}
           [host."{{ $scheme }}://{{ $regHost }}/v2/{{ .item.project }}"]
             capabilities = ["pull", "resolve"]
             override_path = true
@@ -263,6 +293,43 @@
         mode: "0600"
       with_items: "{{ .public_registry_mirrors }}"
       when: 'eq (printf "%v" (default false .enable_public_registry_mirrors)) "true"'
+      tags: ["containerd", "registry"]
+    - name: Write override_path _default hosts.toml for unlisted external registries
+      copy:
+        content: |
+          {{- $regHost := index (splitList "/" (trimPrefix "http://" (trimPrefix "https://" .registry.url))) 0 -}}
+          {{- $rawScheme := default "auto" .registry.scheme -}}
+          {{- $scheme := ternary "http" "https" (eq $rawScheme "http") -}}
+          {{- $hasCa := not (empty (default "" (index . "registry" "ca_cert_file"))) -}}
+          {{- $insecure := ne (printf "%v" (default false .registry.insecure)) "false" -}}
+          {{- $skipVerify := ternary true false $insecure -}}
+          {{- $authBasic := default "" (index . "registry" "auth_basic") -}}
+          {{- $defaultProj := default "external" .public_registry_default_mirror_project -}}
+          [host."{{ $scheme }}://{{ $regHost }}/v2/{{ $defaultProj }}"]
+            capabilities = ["pull", "resolve"]
+            override_path = true
+          {{- if and (eq $scheme "https") $hasCa }}
+            ca = "/etc/containerd/certs.d/{{ $regHost }}/ca.crt"
+          {{- end }}
+            skip_verify = {{ $skipVerify }}
+          {{- if not (empty $authBasic) }}
+            [host."{{ $scheme }}://{{ $regHost }}/v2/{{ $defaultProj }}".header]
+              authorization = "Basic {{ $authBasic }}"
+          {{- end }}
+          {{- if and (eq $rawScheme "auto") $insecure }}
+          [host."http://{{ $regHost }}/v2/{{ $defaultProj }}"]
+            capabilities = ["pull", "resolve"]
+            override_path = true
+            skip_verify = true
+          {{- if not (empty $authBasic) }}
+            [host."http://{{ $regHost }}/v2/{{ $defaultProj }}".header]
+              authorization = "Basic {{ $authBasic }}"
+          {{- end }}
+          {{- end }}
+        dest: "/etc/containerd/certs.d/_default/hosts.toml"
+        mode: "0600"
+      when: '{{- if eq (printf "%v" (default false .enable_public_registry_mirrors)) "true" -}}{{ not (empty (default "" .public_registry_default_mirror_project)) }}{{- else -}}false{{- end -}}'
+      tags: ["containerd", "registry"]
     - name: Write access-restricted hosts.toml for private registry
       copy:
         content: |
@@ -304,6 +371,7 @@
           {{- end }}
         dest: '/etc/containerd/certs.d/{{ index (splitList "/" (trimPrefix "http://" (trimPrefix "https://" .registry.url))) 0 }}/hosts.toml'
         mode: "0600"
+      tags: ["containerd", "registry"]
     - name: Setup containerd systemd service
       copy:
         content: |

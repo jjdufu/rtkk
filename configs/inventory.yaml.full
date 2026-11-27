@@ -52,8 +52,10 @@ vars:
   cluster_pool_mask_size: "24"
   nodelocaldns_ip: "169.254.20.10"
   # Public image sources -> Harbor transparent mirror mapping (containerd override_path = true)
-  enable_public_registry_mirrors: false
+  enable_public_registry_mirrors: true
   auto_create_mirror_projects: true
+  public_registry_mirrors_fallback: false
+  public_registry_default_mirror_project: "external"
   # strict_mirror_projects: false
   public_registry_mirrors:
     - host: "docker.io"
@@ -70,6 +72,8 @@ vars:
       project: "gcr"
     - host: "k8s.gcr.io"
       project: "gcr"
+    - host: "mirror.gcr.io"
+      project: "gcr"
     - host: "ghcr.io"
       project: "ghcr"
     - host: "mcr.microsoft.com"
@@ -80,9 +84,28 @@ vars:
       project: "nvcr"
     - host: "registry.gitlab.com"
       project: "gitlab"
+    - host: "code.forgejo.org"
+      project: "forgejo"
+    - host: "higress-registry.cn-hangzhou.cr.aliyuncs.com"
+      project: "higress"
+    - host: "registry.cn-hangzhou.cr.aliyuncs.com"
+      project: "aliyun-hz"
+    - host: "lscr.io"
+      project: "lscr"
+    - host: "docker.elastic.co"
+      project: "elastic"
+    - host: "icr.io"
+      project: "icr"
+    - host: "registry.redhat.io"
+      project: "redhat"
+    - host: "registry.access.redhat.com"
+      project: "redhat"
+    - host: "cgr.dev"
+      project: "chainguard"
   # containerd certs.d hosts, auth, and mirror overrides for public image sources (used when enable_public_registry_mirrors is false)
   public_registries_insecure: false
   public_registries_auth: false
+  # public_registries_fallback: true
   # public_registries_mirror: ""
   public_registries_mirrors: {}
   public_registries:
@@ -94,7 +117,7 @@ vars:
     - gcr.io
     - ghcr.io
     - higress-registry.cn-hangzhou.cr.aliyuncs.com
-    - ecr-public.aws.com
+    - public.ecr.aws
     - code.forgejo.org
   coredns_version: "v1.14.6"
   kube_vip_version: "v1.3.2"

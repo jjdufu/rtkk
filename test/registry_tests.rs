@@ -977,18 +977,18 @@ async fn ensure_harbor_mirror_projects_deduplicates_handles_201_409_and_warns_on
         ca_cert_file: None,
     };
 
-    // 1) First run: 12 mirror mappings deduplicate to 9 unique Harbor projects (all 201 Created)
+    // 1) First run: 22 mirror mappings deduplicate to 17 unique Harbor projects (all 201 Created)
     let first = ensure_harbor_mirror_projects(&reg, &projects, false).await?;
     ensure(
-        first.created.len() == 9 && first.existing.is_empty() && first.warnings.is_empty(),
-        &format!("expected 9 created mirror projects on first run, got {first:?}"),
+        first.created.len() == 17 && first.existing.is_empty() && first.warnings.is_empty(),
+        &format!("expected 17 created mirror projects on first run, got {first:?}"),
     )?;
 
-    // 2) Second run: all 9 return 409 Conflict -> idempotent existing=9, created=0
+    // 2) Second run: all 17 return 409 Conflict -> idempotent existing=17, created=0
     let second = ensure_harbor_mirror_projects(&reg, &projects, false).await?;
     ensure(
-        second.created.is_empty() && second.existing.len() == 9 && second.warnings.is_empty(),
-        &format!("expected 9 existing mirror projects on second run, got {second:?}"),
+        second.created.is_empty() && second.existing.len() == 17 && second.warnings.is_empty(),
+        &format!("expected 17 existing mirror projects on second run, got {second:?}"),
     )?;
 
     // 3) Credential lacking create permission (401): warns cleanly when strict=false, errors when strict=true
@@ -1015,5 +1015,89 @@ async fn ensure_harbor_mirror_projects_deduplicates_handles_201_409_and_warns_on
     ensure(
         warn_404.warnings.len() == 1,
         &format!("expected non-fatal 404 warning for non-Harbor registry, got {warn_404:?}"),
+    )
+}
+
+#[test]
+fn transparent_mirror_resolution_and_harbor_repo_encoding() -> Result<(), String> {
+    let mirrors = default_public_registry_mirrors();
+    ensure(
+        mirrors.len() == 22,
+        &format!("expected 22 default mirrors, got {}", mirrors.len()),
+    )?;
+
+    let nginx = rtkk::registry::resolve_transparent_target(
+        "nginx:1.27",
+        "192.168.26.3/rtkk",
+        &mirrors,
+        Some("external"),
+    )?;
+    ensure(
+        nginx.normalized_source == "docker.io/library/nginx:1.27"
+            && nginx.target_ref == "192.168.26.3/dockerhub/library/nginx:1.27"
+            && !nginx.used_default_fallback,
+        &format!("unexpected nginx mapping: {nginx:?}"),
+    )?;
+
+    let idx_docker = rtkk::registry::resolve_transparent_target(
+        "index.docker.io/nginx:alpine",
+        "192.168.26.3/rtkk",
+        &mirrors,
+        Some("external"),
+    )?;
+    ensure(
+        idx_docker.target_ref == "192.168.26.3/dockerhub/library/nginx:alpine",
+        &format!("unexpected index.docker.io mapping: {idx_docker:?}"),
+    )?;
+
+    let forgejo = rtkk::registry::resolve_transparent_target(
+        "code.forgejo.org/forgejo/forgejo:9",
+        "192.168.26.3/rtkk",
+        &mirrors,
+        Some("external"),
+    )?;
+    ensure(
+        forgejo.target_ref == "192.168.26.3/forgejo/forgejo/forgejo:9"
+            && !forgejo.used_default_fallback,
+        &format!("unexpected forgejo mapping: {forgejo:?}"),
+    )?;
+
+    let unlisted = rtkk::registry::resolve_transparent_target(
+        "unlisted.vendor.io/team/app:v2",
+        "192.168.26.3/rtkk",
+        &mirrors,
+        Some("external"),
+    )?;
+    ensure(
+        unlisted.target_ref == "192.168.26.3/external/team/app:v2"
+            && unlisted.used_default_fallback
+            && unlisted.matched_rule == "_default -> external",
+        &format!("unexpected _default fallback mapping: {unlisted:?}"),
+    )?;
+
+    ensure(
+        rtkk::registry::resolve_transparent_target(
+            "192.168.26.3/rtkk/pause:3.10",
+            "192.168.26.3/rtkk",
+            &mirrors,
+            Some("external"),
+        )
+        .is_err(),
+        "private registry self-reference must be rejected",
+    )?;
+
+    ensure(
+        rtkk::registry::encode_harbor_repo_segment("library/nginx") == "library%252Fnginx"
+            && rtkk::registry::encode_harbor_repo_segment("oss/kubernetes/pause")
+                == "oss%252Fkubernetes%252Fpause",
+        "Harbor repo segment encoding must double-encode slashes as %252F",
+    )?;
+
+    let extracted = rtkk::registry::extract_image_refs_from_text(
+        "# comment\n  image: \"nginx:1.27\"\n- bitnami/redis:7.4\nnginx:1.27\n",
+    );
+    ensure(
+        extracted == vec!["nginx:1.27".to_string(), "bitnami/redis:7.4".to_string()],
+        &format!("unexpected extracted image refs: {extracted:?}"),
     )
 }

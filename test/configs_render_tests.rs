@@ -1192,6 +1192,30 @@ fn verify_public_registries_mirror_and_auth(
             && mirror_toml.contains("skip_verify = true")
             && mirror_toml.contains("authorization = \"Basic YWRtaW46Y2hhbmdlLW1l\""),
         &format!("public_registries mirror+auth hosts.toml unexpected:\n{mirror_toml}"),
+    )?;
+
+    // Also verify Mode A default fallback key, automatic override_path on /v2/ mirror URL, and CA mount
+    let mut default_mirror_ctx = base_ctx.clone();
+    if let Some(obj) = default_mirror_ctx.as_object_mut() {
+        obj.insert("item".to_string(), json!("quay.io"));
+        obj.insert(
+            "public_registries_mirrors".to_string(),
+            json!({ "default": "https://192.168.26.3/v2/proxy-cache" }),
+        );
+        obj.insert("public_registries_fallback".to_string(), json!(false));
+        if let Some(reg) = obj.get_mut("registry").and_then(Value::as_object_mut) {
+            reg.insert("ca_cert_file".to_string(), json!("./pki/registry-ca.crt"));
+        }
+    }
+    let default_toml = render_template_string(&pub_tmpl, &json_to_gtmpl(&default_mirror_ctx))?;
+    ensure(
+        default_toml.contains("[host.\"https://192.168.26.3/v2/proxy-cache\"]")
+            && default_toml.contains("override_path = true")
+            && default_toml.contains("ca = \"/etc/containerd/certs.d/192.168.26.3/ca.crt\"")
+            && !default_toml.contains("server = "),
+        &format!(
+            "Mode A default mirror + override_path + CA hosts.toml unexpected:\n{default_toml}"
+        ),
     )
 }
 
@@ -1301,6 +1325,19 @@ fn verify_override_path_disabled_mode(
     ensure(
         !eval_condition(mirror_when, base_ctx)?,
         "override_path hosts.toml task must be skipped when enable_public_registry_mirrors is false",
+    )?;
+
+    let default_task = play2_tasks
+        .iter()
+        .find(|t| {
+            t.name.as_deref()
+                == Some("Write override_path _default hosts.toml for unlisted external registries")
+        })
+        .ok_or("missing _default hosts.toml task")?;
+    let default_when = default_task.when.as_ref().ok_or("missing _default when")?;
+    ensure(
+        !eval_condition(default_when, base_ctx)?,
+        "_default hosts.toml task must be skipped when enable_public_registry_mirrors is false",
     )
 }
 
@@ -1346,9 +1383,9 @@ fn verify_override_path_enabled_renders(
         .and_then(Value::as_array)
         .ok_or("missing public_registry_mirrors array")?;
     ensure(
-        mirrors.len() == 12,
+        mirrors.len() == 22,
         &format!(
-            "expected 12 default public_registry_mirrors, got {}",
+            "expected 22 default public_registry_mirrors, got {}",
             mirrors.len()
         ),
     )?;
@@ -1375,16 +1412,86 @@ fn verify_override_path_enabled_renders(
         )?;
         let expected_section = format!("[host.\"https://10.0.0.10/v2/{proj}\"]");
         ensure(
-            rendered.contains(&format!("server = \"https://{host}\""))
+            !rendered.contains("server = ")
                 && rendered.contains(&expected_section)
                 && rendered.contains("override_path = true")
                 && rendered.contains("ca = \"/etc/containerd/certs.d/10.0.0.10/ca.crt\"")
                 && rendered.contains("skip_verify = false")
                 && rendered.contains("authorization = \"Basic "),
-            &format!("unexpected override_path hosts.toml for {host}:\n{rendered}"),
+            &format!("unexpected no-fallback override_path hosts.toml for {host}:\n{rendered}"),
         )?;
     }
-    Ok(())
+
+    // Verify explicit opt-in fallback restores server = "https://<host>"
+    let mut fallback_ctx = enabled_ctx.clone();
+    if let Some(obj) = fallback_ctx.as_object_mut() {
+        obj.insert("public_registry_mirrors_fallback".to_string(), json!(true));
+        obj.insert(
+            "item".to_string(),
+            json!({"host": "docker.io", "project": "dockerhub"}),
+        );
+    }
+    let fallback_rendered = render_template_string(content_tpl, &json_to_gtmpl(&fallback_ctx))?;
+    ensure(
+        fallback_rendered.contains("server = \"https://docker.io\""),
+        &format!("fallback=true must render server line:\n{fallback_rendered}"),
+    )?;
+
+    verify_default_catchall_hosts_toml(play2_tasks, enabled_ctx)
+}
+
+fn verify_default_catchall_hosts_toml(
+    play2_tasks: &[rtkk::tasks::Task],
+    enabled_ctx: &Value,
+) -> Result<(), String> {
+    let default_task = play2_tasks
+        .iter()
+        .find(|t| {
+            t.name.as_deref()
+                == Some("Write override_path _default hosts.toml for unlisted external registries")
+        })
+        .ok_or("missing _default hosts.toml task")?;
+    ensure(
+        eval_condition(
+            default_task.when.as_ref().ok_or("missing _default when")?,
+            enabled_ctx,
+        )?,
+        "_default hosts.toml must run when default mirror project is non-empty",
+    )?;
+    let def_copy = default_task.copy.as_ref().ok_or("missing _default copy")?;
+    ensure(
+        def_copy.get("mode").and_then(Value::as_str) == Some("0600")
+            && def_copy.get("dest").and_then(Value::as_str)
+                == Some("/etc/containerd/certs.d/_default/hosts.toml"),
+        "_default hosts.toml must target /etc/containerd/certs.d/_default/hosts.toml with mode 0600",
+    )?;
+    let def_tpl = def_copy
+        .get("content")
+        .and_then(Value::as_str)
+        .ok_or("missing _default content")?;
+    let def_rendered = render_template_string(def_tpl, &json_to_gtmpl(enabled_ctx))?;
+    ensure(
+        !def_rendered.contains("server = ")
+            && def_rendered.contains("[host.\"https://10.0.0.10/v2/external\"]")
+            && def_rendered.contains("override_path = true")
+            && def_rendered.contains("ca = \"/etc/containerd/certs.d/10.0.0.10/ca.crt\""),
+        &format!("unexpected _default hosts.toml:\n{def_rendered}"),
+    )?;
+
+    let mut no_default_ctx = enabled_ctx.clone();
+    if let Some(obj) = no_default_ctx.as_object_mut() {
+        obj.insert(
+            "public_registry_default_mirror_project".to_string(),
+            json!(""),
+        );
+    }
+    ensure(
+        !eval_condition(
+            default_task.when.as_ref().ok_or("missing _default when")?,
+            &no_default_ctx,
+        )?,
+        "_default hosts.toml must be skipped when public_registry_default_mirror_project is empty",
+    )
 }
 
 #[test]
@@ -1404,17 +1511,20 @@ fn public_registry_mirrors_override_path_enabled_and_disabled_modes() -> Result<
     let play2_tasks = play2.tasks.as_ref().ok_or("missing Play 2 tasks")?;
 
     let base_ctx = host_context_json(&flat, "c23-p61")?;
-    verify_override_path_disabled_mode(play2_tasks, &base_ctx)?;
+    let mut disabled_ctx = base_ctx.clone();
+    if let Some(obj) = disabled_ctx.as_object_mut() {
+        obj.insert("enable_public_registry_mirrors".to_string(), json!(false));
+    }
+    verify_override_path_disabled_mode(play2_tasks, &disabled_ctx)?;
 
-    let mut enabled_ctx = base_ctx.clone();
-    if let Some(obj) = enabled_ctx.as_object_mut() {
-        obj.insert("enable_public_registry_mirrors".to_string(), json!(true));
-        obj.insert("auto_create_mirror_projects".to_string(), json!(true));
-        if let Some(reg) = obj.get_mut("registry").and_then(Value::as_object_mut) {
-            reg.insert("scheme".to_string(), json!("https"));
-            reg.insert("insecure".to_string(), json!(false));
-            reg.insert("ca_cert_file".to_string(), json!("./pki/registry-ca.crt"));
-        }
+    // Default inventory.yaml enables transparent mirrors out of the box
+    let mut enabled_ctx = base_ctx;
+    if let Some(obj) = enabled_ctx.as_object_mut()
+        && let Some(reg) = obj.get_mut("registry").and_then(Value::as_object_mut)
+    {
+        reg.insert("scheme".to_string(), json!("https"));
+        reg.insert("insecure".to_string(), json!(false));
+        reg.insert("ca_cert_file".to_string(), json!("./pki/registry-ca.crt"));
     }
     verify_override_path_enabled_renders(play2_tasks, &enabled_ctx)
 }

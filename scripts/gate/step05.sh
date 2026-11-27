@@ -286,6 +286,29 @@ EOF
   push_job="$(json_field "$GATE_HTTP_BODY" '.job_id')"
   push_state="$(wait_job_terminal "$push_job" "$ADMIN_TOKEN" 20)"
   assert_eq "$push_state" "succeeded" "registry push job must succeed"
+
+  # Verify Harbor management & transparent mirror planning endpoints against the same mock Harbor
+  local hp_code
+  hp_code="$(http_status GET "${GATE_BASE_URL}/api/v1/harbor/projects" -H "$AUTH_HDR")"
+  assert_eq "$hp_code" "200" "GET /api/v1/harbor/projects must return 200"
+  assert_eq "$(json_field "$GATE_HTTP_BODY" '.is_harbor')" "true" "mock server must report is_harbor=true"
+  assert_eq "$(json_field "$GATE_HTTP_BODY" '.default_fallback_project')" "external" "default fallback project must be external"
+
+  local sync_code
+  sync_code="$(http_status POST "${GATE_BASE_URL}/api/v1/harbor/projects/sync" \
+    -H "$AUTH_HDR" \
+    -H "Content-Type: application/json" \
+    -d '{}')"
+  assert_eq "$sync_code" "200" "POST /api/v1/harbor/projects/sync must return 200"
+
+  local plan_code
+  plan_code="$(http_status POST "${GATE_BASE_URL}/api/v1/harbor/mirror/plan" \
+    -H "$AUTH_HDR" \
+    -H "Content-Type: application/json" \
+    -d '{"images":["nginx:1.27","unlisted.vendor.io/team/app:v1"],"check_remote":true}')"
+  assert_eq "$plan_code" "200" "POST /api/v1/harbor/mirror/plan must return 200"
+  assert_eq "$(json_field "$GATE_HTTP_BODY" '.plans[0].target_repository')" "dockerhub/library/nginx" "nginx short name must map to dockerhub/library/nginx"
+  assert_eq "$(json_field "$GATE_HTTP_BODY" '.plans[1].target_repository')" "external/team/app" "unlisted host must fall back to external project"
 }
 
 run_assertion "artifacts-status-inventory-aligned" test_artifacts_status_inventory_aligned
