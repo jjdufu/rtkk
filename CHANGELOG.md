@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.0.7](https://github.com/jjdufu/rtkk/compare/v0.0.6...v0.0.7) (2026-11-27)
+
+
+### Features
+
+* **configs,tests:** 默认开启透明映射与禁回退外网、新增 _default 兜底并修复模式 A 渲染 ([1c0a0a8](https://github.com/jjdufu/rtkk/commit/1c0a0a863a878fb2dd75f1f65003b05d1f9373e3))
+* **engine,registry,daemon:** 支持 Harbor 资产管理、透明镜像一键导入、_default 兜底与 source_mirrors ([d1f2bc0](https://github.com/jjdufu/rtkk/commit/d1f2bc0ee2624d1dbf1fb18b899a1690bd024c34))
+* **web:** 新增独立 /harbor 私库管理页与集群配置透明映射表编辑 ([932a8ab](https://github.com/jjdufu/rtkk/commit/932a8ab05d6d6d63afa8762e9a21ea9461d073b1))
+
 ## [0.0.6](https://github.com/jjdufu/rtkk/compare/v0.0.5...v0.0.6) (2026-11-22)
 
 
